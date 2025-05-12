@@ -20,20 +20,23 @@ from torch import nn
 from torch.nn import Embedding
 from torch_geometric.nn import SAGEConv
 
+from younger_apps_dl.models import register_model
 
-class SAGE(nn.Module):
-    def __init__(self, node_dict_size, node_dim, hidden_dim, output_dim):
-        super(SAGE, self).__init__()
+@register_model('sage_ep')
+class SAGE_EP(nn.Module):
+    def __init__(self, node_dict_size, node_dim, hidden_dim, output_dim, dropout_rate, layer_number=4):
+        super(SAGE_EP, self).__init__()
         self.node_embedding_layer = Embedding(node_dict_size, node_dim)
         self.conv1 = SAGEConv(node_dim, hidden_dim)
         self.conv2 = SAGEConv(hidden_dim, output_dim)
+        self.dropout_rate = dropout_rate
         self.initialize_parameters()
 
     def encode(self, data):
         x, edge_index = data.x, data.edge_index
         x = self.node_embedding_layer(x).squeeze(1)
         x = F.relu(self.conv1(x, edge_index))
-        x = F.dropout(x, p=0.5, training=self.training)
+        x = F.dropout(x, p=self.dropout_rate, training=self.training)
         x = self.conv2(x, edge_index)
 
         return x

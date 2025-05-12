@@ -147,6 +147,8 @@ class GraphSplit(BaseEngine[GraphSplitOptions]):
         expected_validation_dataset_size = min(max(0, expected_overall_split_count-self.options.training_dataset_size), self.options.validation_dataset_size)
         expected_test_dataset_size = min(max(0, expected_overall_split_count-self.options.training_dataset_size-self.options.validation_dataset_size), self.options.test_dataset_size)
 
+        logger.info(f'split_tries = {self.options.split_tries}')
+        logger.info(f'split_count = {self.options.split_count}')
         logger.info(f'Expected Overal # of Splits = {expected_overall_split_count}')
         logger.info(f'Expected # of Splits - Training/Validation/Test = {expected_training_dataset_size} / {expected_validation_dataset_size} / {expected_test_dataset_size}')
 

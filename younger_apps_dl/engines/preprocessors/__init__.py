@@ -15,3 +15,4 @@
 
 
 from .graph_split import GraphSplit, GraphSplitOptions
+from .edge_preprocess import EdgeDatasetSplit, EdgeDatasetSplitOptions

@@ -14,3 +14,5 @@
 ########################################################################
 
 
+from .node_prediction import NodePrediction
+from .edge_prediction import EdgePrediction

@@ -30,3 +30,5 @@ def register_model(name: str):
     return wrapper
 
 from .embedding import *
+from .node_prediction import *
+from .edge_prediction import *

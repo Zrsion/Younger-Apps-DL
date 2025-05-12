@@ -19,8 +19,10 @@ from torch import nn
 from torch.nn import Embedding
 from torch.nn import functional as F
 from torch_geometric.nn import GATConv
+from younger_apps_dl.models import register_model
 
 
+@register_model('gat')
 class GAT_NP(nn.Module):
 
     def __init__(self, node_dict_size, node_dim, hidden_dim, dropout, output_embedding = False):

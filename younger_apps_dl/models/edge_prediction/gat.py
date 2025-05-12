@@ -20,10 +20,12 @@ from torch import nn
 from torch.nn import Embedding
 from torch_geometric.nn import GATConv
 
+from younger_apps_dl.models import register_model
 
-class GAT(nn.Module):
+@register_model('gat_ep')
+class GAT_EP(nn.Module):
     def __init__(self, node_dict_size, node_dim, hidden_dim, output_dim):
-        super(GAT, self).__init__()
+        super(GAT_EP, self).__init__()
         self.node_embedding_layer = Embedding(node_dict_size, node_dim)
         self.conv1 = GATConv(node_dim, hidden_dim, heads=8, concat=False)
         self.conv2 = GATConv(hidden_dim, output_dim, heads=8, concat=False)

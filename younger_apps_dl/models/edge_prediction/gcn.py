@@ -20,10 +20,12 @@ from torch import nn
 from torch.nn import Embedding
 from torch_geometric.nn import GCNConv
 
+from younger_apps_dl.models import register_model
 
-class GCN(nn.Module):
+@register_model('gcn_ep')
+class GCN_EP(nn.Module):
     def __init__(self, node_dict_size, node_dim, hidden_dim, output_dim):
-        super(GCN, self).__init__()
+        super(GCN_EP, self).__init__()
         self.node_embedding_layer = Embedding(node_dict_size, node_dim)
         self.conv1 = GCNConv(node_dim, hidden_dim)
         self.conv2 = GCNConv(hidden_dim, output_dim)

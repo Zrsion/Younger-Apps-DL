@@ -275,6 +275,7 @@ class BasicEmbedding(BaseTask[BasicEmbeddingOptions]):
 
         output = model(x.detach(), edge_index)
         loss = torch.nn.functional.cross_entropy(output, golden.squeeze(1), ignore_index=-1)
+        loss.backward()
         return [('loss', loss, lambda x: f'{x:.4f}')]
 
     def _valid_fn_(self, model: torch.nn.Module, dataloader: torch.utils.data.DataLoader) -> list[tuple[str, torch.Tensor, Callable[[float], str]]]:

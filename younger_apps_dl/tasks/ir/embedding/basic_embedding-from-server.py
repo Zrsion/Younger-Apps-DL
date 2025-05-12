@@ -5,8 +5,8 @@
 # Created time: 2025-01-14 18:07:43
 # Author: Jason Young (杨郑鑫).
 # E-Mail: AI.Jason.Young@outlook.com
-# Last Modified by: Luzhou Peng (彭路洲) 
-# Last Modified time: 2025-04-24 16:57:27
+# Last Modified by: Jason Young (杨郑鑫)
+# Last Modified time: 2025-04-15 18:40:57
 # Copyright (c) 2025 Yangs.AI
 # 
 # This source code is licensed under the Apache License 2.0 found in the
@@ -25,27 +25,19 @@ import pathlib
 from typing import Literal, Callable, Iterable
 from pydantic import BaseModel, Field
 from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score, top_k_accuracy_score
-from sklearn.metrics import roc_auc_score, f1_score, average_precision_score
 
 from younger.commons.io import create_dir
 
 from younger_apps_dl.tasks import BaseTask, register_task
-from younger_apps_dl.engines import StandardTrainer, StandardTrainerOptions, StandardEvaluator, StandardEvaluatorOptions, StandardPredictor, StandardPredictorOptions, EdgeDatasetSplit, EdgeDatasetSplitOptions
-from younger_apps_dl.datasets import EdgeData, EdgeDataset 
-from younger_apps_dl.models import VGAE_EP, GAT_EP, GCN_EP, SAGE_EP 
+from younger_apps_dl.engines import StandardTrainer, StandardTrainerOptions, StandardEvaluator, StandardEvaluatorOptions, StandardPredictor, StandardPredictorOptions, GraphSplit, GraphSplitOptions
+from younger_apps_dl.datasets import GraphDataset, GraphData
+from younger_apps_dl.models import MAEGIN
 
-MODELS_MAP = {
-    'GAT': GAT_EP,
-    'GCN': GCN_EP,
-    'SAGE': SAGE_EP,
-    'VGAE': VGAE_EP,
-}
 
 class ModelOptions(BaseModel):
-    model_type: Literal['AE', 'GAT', 'GCN', 'GIN', 'SAGE'] = Field('SAGE', description='The identifier of the model type, e.g., \'SAGE\', etc.')
+    model_type: Literal['MAEGIN'] = Field('MAEGIN', description='The identifier of the model type, e.g., \'MAEGIN\', etc.')
     node_emb_dim: int = Field(512, description='Node embedding dimensionality.')
     hidden_dim: int = Field(256, description='Hidden layer dimensionality within the model.')
-    output_dim: int = Field(256, description='Output layer dimensionality.')
     dropout_rate: float = Field(0.5, description='Dropout probability used for regularization.')
     layer_number: int = Field(3, description='Number of layers (e.g., message-passing rounds for GNNs).')
 
@@ -71,7 +63,7 @@ class DatasetOptions(BaseModel):
     worker_number: int = Field(4, description='Number of workers for parallel data loading or processing.')
 
 
-class BasicNodePredictionOptions(BaseModel):
+class BasicEmbeddingOptions(BaseModel):
     # Main Options
     logging_filepath: pathlib.Path | None = Field(None, description='Logging file path where logs will be saved, default to None, which may save to a default path that is determined by the Younger.')
 
@@ -87,7 +79,7 @@ class BasicNodePredictionOptions(BaseModel):
     trainer: StandardTrainerOptions
     evaluator: StandardEvaluatorOptions
     predictor: StandardPredictorOptions
-    preprocessor: EdgeDatasetSplitOptions
+    preprocessor: GraphSplitOptions
 
     train_dataset: DatasetOptions
     valid_dataset: DatasetOptions
@@ -98,9 +90,10 @@ class BasicNodePredictionOptions(BaseModel):
     scheduler: SchedulerOptions
 
 
-@register_task('ir', 'edge_prediction')
-class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
-    OPTIONS = BasicNodePredictionOptions
+# Self-Supervised Learning for Node Prediction
+@register_task('ir', 'basic_embedding')
+class BasicEmbedding(BaseTask[BasicEmbeddingOptions]):
+    OPTIONS = BasicEmbeddingOptions
     def train(self):
         self.valid_dataset = self._build_dataset_(
             self.options.valid_dataset.meta_filepath,
@@ -117,11 +110,9 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
             self.options.train_dataset.worker_number
         )
         self.model = self._build_model_(
-            self.options.model.model_type,
             len(self.train_dataset.dicts['i2t']),
             self.options.model.node_emb_dim,
             self.options.model.hidden_dim,
-            self.options.model.output_dim,
             self.options.model.dropout_rate,
             self.options.model.layer_number
         )
@@ -154,6 +145,7 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
             self._on_step_end_fn_,
             self._on_epoch_begin_fn_,
             self._on_epoch_end_fn_,
+            self._on_update_fn_,
             'pyg',
             self.options.logging_filepath
         )
@@ -170,7 +162,6 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
             len(self.test_dataset.dicts['i2t']),
             self.options.model.node_emb_dim,
             self.options.model.hidden_dim,
-            self.options.model.output_dim,
             self.options.model.dropout_rate,
             self.options.model.layer_number
         )
@@ -187,13 +178,11 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
 
     def predict(self):
         predictor = StandardPredictor(self.options.predictor)
-        self.dicts = EdgeDataset.load_dicts(EdgeDataset.load_meta(predictor.options.raw.load_dirpath.joinpath('meta.json')))
+        self.dicts = GraphDataset.load_dicts(GraphDataset.load_meta(predictor.options.raw.load_dirpath.joinpath('meta.json')))
         self.model = self._build_model_(
-            self.options.model.model_type,
             len(self.dicts['i2t']),
             self.options.model.node_emb_dim,
             self.options.model.hidden_dim,
-            self.options.model.output_dim,
             self.options.model.dropout_rate,
             self.options.model.layer_number
         )
@@ -204,22 +193,21 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
         )
 
     def preprocess(self):
-        preprocessor = EdgeDatasetSplit(self.options.preprocessor)
+        preprocessor = GraphSplit(self.options.preprocessor)
         preprocessor.run(self.options.logging_filepath)
 
-    def _build_model_(self, model_type: str, node_emb_size: int, node_emb_dim: int, hidden_dim: int, output_dim: int, dropout_rate: float, layer_number: int) -> torch.nn.Module:
-        model = MODELS_MAP[model_type](
+    def _build_model_(self, node_emb_size: int, node_emb_dim: int, hidden_dim: int, dropout_rate: float, layer_number: int) -> torch.nn.Module:
+        model = MAEGIN(
             node_emb_size,
             node_emb_dim,
             hidden_dim,
-            output_dim,
             dropout_rate,
             layer_number
         )
         return model
 
-    def _build_dataset_(self, meta_filepath: pathlib.Path, raw_dirpath: pathlib.Path, processed_dirpath: pathlib.Path, split: Literal['train', 'valid', 'test'], worker_number: int) -> EdgeDataset:
-        dataset = EdgeDataset(
+    def _build_dataset_(self, meta_filepath: pathlib.Path, raw_dirpath: pathlib.Path, processed_dirpath: pathlib.Path, split: Literal['train', 'valid', 'test'], worker_number: int) -> GraphDataset:
+        dataset = GraphDataset(
             meta_filepath,
             raw_dirpath,
             processed_dirpath,
@@ -266,14 +254,28 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
         )
         return scheduler
 
-    def _train_fn_(self, model: torch.nn.Module, minibatch: EdgeData) -> list[tuple[str, torch.Tensor, Callable[[float], str]]]:
+    def _train_fn_(self, model: torch.nn.Module, minibatch: GraphData) -> list[tuple[str, torch.Tensor, Callable[[float], str]]]:
         device_descriptor = next(model.parameters()).device
         minibatch = minibatch.to(device_descriptor)
-        # print(minibatch)
-        output = self.model(minibatch, minibatch.edge_label_index)
-        criterion = torch.nn.BCEWithLogitsLoss()
-        loss = criterion(output.reshape(-1), minibatch.edge_label)
-        loss.backward()
+        x, edge_index, golden = self._mask_(minibatch, self.dicts['t2i'], self.options.mask_ratio, self.options.mask_method)
+
+        if self.options.scheduled_sampling:
+            scheduled_sampling_levels = list()
+            # Only For -N, ..., -3, -2, -1
+            for i in range(-self.scheduled_sampling_level_at_epoch, 0):
+                if random.random() <= self.scheduled_sampling_ratio_at_epoch:
+                    scheduled_sampling_levels.append(i)
+
+            if len(scheduled_sampling_levels):
+                model.eval()
+                with torch.no_grad():
+                    x, predict = self._simulate_predict_(model, minibatch, self.dicts['t2i'], scheduled_sampling_levels)
+
+                model.train()
+                x = x.detach()
+
+        output = model(x.detach(), edge_index)
+        loss = torch.nn.functional.cross_entropy(output, golden.squeeze(1), ignore_index=-1)
         return [('loss', loss, lambda x: f'{x:.4f}')]
 
     def _valid_fn_(self, model: torch.nn.Module, dataloader: torch.utils.data.DataLoader) -> list[tuple[str, torch.Tensor, Callable[[float], str]]]:
@@ -285,43 +287,43 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
         # Return Output & Golden
         with tqdm.tqdm(total=len(dataloader)) as progress_bar:
             for index, minibatch in enumerate(dataloader, start=1):
-                minibatch: EdgeData = minibatch.to(device_descriptor)
-                output = self.model(minibatch, minibatch.edge_label_index)
-                criterion = torch.nn.BCEWithLogitsLoss()
-                loss += criterion(output.reshape(-1), minibatch.edge_label)
-                edge_label = minibatch.edge_label
-                golden = edge_label.clone()
-                # if self.options.scheduled_sampling:
-                #     x, edge_index, golden = self._mask_(minibatch, self.dicts['t2i'], 1, self.options.mask_method, test=True)
-                #     x, output = self._simulate_predict_(model, minibatch, self.dicts['t2i'], range(-self.options.scheduled_sampling_level, 0), test=True)
-                # else:
-                #     x, edge_index, golden = self._mask_(minibatch, self.dicts['t2i'], self.options.mask_ratio, self.options.mask_method)
-                #     output = torch.softmax(model(x, edge_index), dim=-1)
+                minibatch: GraphData = minibatch.to(device_descriptor)
 
-                outputs.append(output.view(-1).sigmoid())
+                if self.options.scheduled_sampling:
+                    x, edge_index, golden = self._mask_(minibatch, self.dicts['t2i'], 1, self.options.mask_method, test=True)
+                    x, output = self._simulate_predict_(model, minibatch, self.dicts['t2i'], range(-self.options.scheduled_sampling_level, 0), test=True)
+                else:
+                    x, edge_index, golden = self._mask_(minibatch, self.dicts['t2i'], self.options.mask_ratio, self.options.mask_method)
+                    output = torch.softmax(model(x, edge_index), dim=-1)
+                loss += torch.nn.functional.cross_entropy(output, golden.squeeze(1), ignore_index=-1)
+
+                outputs.append(output)
                 goldens.append(golden)
                 progress_bar.update(1)
 
-        outputs = torch.cat(outputs).reshape(-1).cpu().numpy()
-        goldens = torch.cat(goldens).reshape(-1).cpu().numpy()
+        outputs = torch.cat(outputs)
+        goldens = torch.cat(goldens).squeeze()
 
-        pred = (outputs > 0.5).astype(int)
-        
         val_indices = goldens != -1
         outputs = outputs[val_indices]
         goldens = goldens[val_indices]
 
+        score = outputs.cpu().numpy()
+        pred = outputs.max(1)[1].cpu().numpy()
+        gold = goldens.cpu().numpy()
+
         print("pred[:5]:", pred[:5])
-        print("gold[:5]:", goldens[:5])
+        print("gold[:5]:", gold[:5])
 
         metrics = [
             ('loss', loss, lambda x: f'{x:.4f}'),
-            ('auc', torch.tensor(roc_auc_score(goldens, outputs)), lambda x: f'{x:.4f}'),
-            ('ap', torch.tensor(average_precision_score(goldens, outputs)), lambda x: f'{x:.4f}'),
-            ('macro_p', torch.tensor(precision_score(goldens, pred, average='macro', zero_division=0)), lambda x: f'{x:.4f}'),
-            ('macro_r', torch.tensor(recall_score(goldens, pred, average='macro', zero_division=0)), lambda x: f'{x:.4f}'),
-            ('macro_f1', torch.tensor(f1_score(goldens, pred, average='macro', zero_division=0)), lambda x: f'{x:.4f}'),
-            ('micro_f1', torch.tensor(f1_score(goldens, pred, average='micro', zero_division=0)), lambda x: f'{x:.4f}'),
+            ('acc', torch.tensor(accuracy_score(gold, pred), device=x.device), lambda x: f'{x:.4f}'),
+            ('macro_p', torch.tensor(precision_score(gold, pred, average='macro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
+            ('macro_r', torch.tensor(recall_score(gold, pred, average='macro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
+            ('macro_f1', torch.tensor(f1_score(gold, pred, average='macro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
+            ('micro_f1', torch.tensor(f1_score(gold, pred, average='micro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
+            ('top3_acc', torch.tensor(top_k_accuracy_score(gold, score, k = 3, labels=range(score.shape[1])), device=x.device), lambda x: f'{x:.4f}'),
+            ('top5_acc', torch.tensor(top_k_accuracy_score(gold, score, k = 5, labels=range(score.shape[1])), device=x.device), lambda x: f'{x:.4f}') 
         ]
         return metrics
 
@@ -350,7 +352,54 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
     def _on_epoch_end_fn_(self, epoch: int) -> None:
         return
 
-    def _simulate_predict_(self, model: torch.nn.Module, minibatch: EdgeData, t2i: dict[str, int], simulate_levels: Iterable[int], test: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+    def _on_update_fn_(self, itr: int) -> None:
+        self.scheduler.step()
+        return
+
+    def _mask_(self, minibatch: GraphData, t2i: dict[str, int], mask_ratio: float, mask_method: Literal['Random', 'Purpose'], test: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        device_descriptor = minibatch.x.device
+        x = minibatch.x.clone()
+        edge_index = minibatch.edge_index.clone()
+
+        golden = x.clone()
+
+        if mask_method == 'Random':
+            mask_probability = torch.full(x.shape, mask_ratio, dtype=torch.float, device=device_descriptor)
+
+        if mask_method == 'Purpose':
+            source_index = edge_index[0]
+            target_index = edge_index[1]
+
+            last_level_nodes = target_index[~torch.isin(target_index, source_index)]
+
+            unique = torch.unique(last_level_nodes)
+            if unique.shape[0] != 0:
+                mask_ratio = mask_ratio * x.shape[0] / unique.shape[0]
+                mask_ratio = 1 if mask_ratio > 1 else mask_ratio
+
+            mask_probability = torch.zeros_like(x, dtype=torch.float, device=self.device_descriptor)
+            mask_probability[last_level_nodes] = torch.full(x.shape, mask_ratio, dtype=torch.float, device=device_descriptor)[last_level_nodes]
+
+        mask_indices = torch.bernoulli(mask_probability).to(device_descriptor).bool()
+        golden[~mask_indices] = -1
+
+        if test:
+            mask_mask_indices = torch.bernoulli(torch.full(x.shape, 1.0, dtype=torch.float, device=device_descriptor)).bool() & mask_indices
+            x[mask_mask_indices] = t2i['__MASK__']
+            # x = torch.where(mask_indices, torch.full_like(x, t2i['__MASK__']), x)
+        else:
+            mask_mask_indices = torch.bernoulli(torch.full(x.shape, 0.8, dtype=torch.float, device=device_descriptor)).bool() & mask_indices
+            x[mask_mask_indices] = t2i['__MASK__']
+            # x = torch.where(mask_indices, torch.full_like(x, t2i['__MASK__']), x)
+
+            mask_optr_indices = torch.bernoulli(torch.full(x.shape, 0.5, dtype=torch.float, device=device_descriptor)).bool() & mask_indices & ~mask_mask_indices
+            x[mask_optr_indices] = torch.randint(2, len(t2i), x.shape, dtype=torch.long, device=device_descriptor)[mask_optr_indices]
+            # rand_values = torch.randint(2, len(t2i), x.shape, dtype=torch.long, device=device_descriptor)
+            # x = torch.where(mask_optr_indices, rand_values, x)
+
+        return x, edge_index, golden
+
+    def _simulate_predict_(self, model: torch.nn.Module, minibatch: GraphData, t2i: dict[str, int], simulate_levels: Iterable[int], test: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
         device_descriptor = minibatch.x.device
         x = minibatch.x.clone()
         edge_index = minibatch.edge_index
@@ -383,7 +432,7 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
             return x, predict
 
     def _predict_raw_fn_(self, model: torch.nn.Module, load_dirpath: pathlib.Path, save_dirpath: pathlib.Path):
-        logicx_filepaths = [logicx_filepath for logicx_filepath in load_dirpath.joinpath('logicxs').iterdir()]
+        logicx_filepaths = [logicx_filepath for logicx_filepath in load_dirpath.joinpath('skeleton').iterdir()]
         device_descriptor = next(model.parameters()).device
 
         from torch_geometric.loader import NeighborLoader
@@ -398,23 +447,26 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
             logicx.load(logicx_filepath)
             graph_hashes.append(LogicX.hash(logicx))
 
-            data = EdgeDataset.process_graph_data(logicx, self.dicts)
+            data = GraphDataset.process_graph_data(logicx, self.dicts)
             loader = NeighborLoader(
                 data,
                 num_neighbors=[-1] * len(model.encoder.layers),
-                batch_size=512,
+                batch_size=25600,
                 input_nodes=None,
                 subgraph_type="directional",
                 directed=True
             )
 
-            embedding_dim = model.encoder.node_.embedding_layer.embedding_dim
-            graph_embedding = torch.zeros(embedding_dim, device=device_descriptor)
+            graph_embedding = None
+            embedding_dim = None
             node_count = 0
             for batch in loader:
-                batch: EdgeData = batch.to(device_descriptor)
+                batch: GraphData = batch.to(device_descriptor)
                 out = model.encoder(batch.x, batch.edge_index)               # shape: [total_nodes_in_batch, dim]
                 center_embeddings = out[:batch.batch_size]                   # shape: [batch_size, dim]
+                if graph_embedding is None:
+                    embedding_dim = out.shape[1]
+                    graph_embedding = torch.zeros(embedding_dim, device=device_descriptor)
                 graph_embedding += center_embeddings.sum(dim=0)
                 node_count += center_embeddings.shape[0]
             assert len(logicx.dag) == node_count

@@ -14,7 +14,7 @@
 ########################################################################
 
 
-from .gat import GAT
-from .gcn import GCN
-from .sage import SAGE
-from .vgae import VGAE
+from .gat import GAT_EP
+from .gcn import GCN_EP
+from .sage import SAGE_EP
+from .vgae import VGAE_EP

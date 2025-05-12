@@ -14,7 +14,7 @@
 ########################################################################
 
 
-from .ae import AE_Encoder, AE_LinearCls
+from .ae import Encoder_NP, LinearCls
 from .gcn import GCN_NP
 from .gin import GIN_NP
 from .gat import GAT_NP

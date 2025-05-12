@@ -1,392 +1,481 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-#
-# Copyright (c) Jason Young (杨郑鑫).
-#
-# E-Mail: <AI.Jason.Young@outlook.com>
-# 2024-05-16 23:43
-#
-# This source code is licensed under the Apache-2.0 license found in the
-# LICENSE file in the root directory of this source tree.
+# -*- encoding=utf8 -*-
 
-import numpy
+########################################################################
+# Created time: 2025-01-14 18:07:43
+# Author: Jason Young (杨郑鑫).
+# E-Mail: AI.Jason.Young@outlook.com
+# Last Modified by: Luzhou Peng (彭路洲) 
+# Last Modified time: 2025-04-24 16:57:27
+# Copyright (c) 2025 Yangs.AI
+# 
+# This source code is licensed under the Apache License 2.0 found in the
+# LICENSE file in the root directory of this source tree.
+########################################################################
+
+
+import math
+import tqdm
+import torch
+import bisect
+import random
+import pandas
 import pathlib
 
-import torch
-import torch.utils.data
+from typing import Literal, Callable, Iterable
+from pydantic import BaseModel, Field
+from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score, top_k_accuracy_score
 
-from typing import Any, Literal
-from collections import OrderedDict
-from torch_geometric.data import Batch, Data
-from torch_geometric.nn import GAE, VGAE
+from younger.commons.io import create_dir
 
-from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score
+from younger_apps_dl.tasks import BaseTask, register_task
+from younger_apps_dl.engines import StandardTrainer, StandardTrainerOptions, StandardEvaluator, StandardEvaluatorOptions, StandardPredictor, StandardPredictorOptions, GraphSplit, GraphSplitOptions
+from younger_apps_dl.datasets import NodeData, NodeDataset 
+from younger_apps_dl.models import Encoder_NP, LinearCls, GAT_NP, GCN_NP, GIN_NP, SAGE_NP 
 
-from younger.datasets.modules import Instance, Network
-from younger.datasets.utils.translation import get_complete_attributes_of_node
+MODELS_MAP = {
+    'AE': Encoder_NP,
+    'GAT': GAT_NP,
+    'GCN': GCN_NP,
+    'GIN': GIN_NP,
+    'SAGE': SAGE_NP
+}
 
-from younger.applications.models import GCN_NP, GIN_NP, GAT_NP, SAGE_NP, Encoder_NP, LinearCls
-from younger.applications.datasets import NodeDataset
-from younger.applications.tasks.base_task import YoungerTask
-from younger.applications.utils.neural_network import load_checkpoint
+class ModelOptions(BaseModel):
+    model_type: Literal['AE', 'GAT', 'GCN', 'GIN', 'SAGE'] = Field('SAGE', description='The identifier of the model type, e.g., \'SAGE\', etc.')
+    node_emb_dim: int = Field(512, description='Node embedding dimensionality.')
+    hidden_dim: int = Field(256, description='Hidden layer dimensionality within the model.')
+    dropout_rate: float = Field(0.5, description='Dropout probability used for regularization.')
+    layer_number: int = Field(3, description='Number of layers (e.g., message-passing rounds for GNNs).')
 
 
-class NodePrediction(YoungerTask):
-    def __init__(self, custom_config: dict) -> None:
-        super().__init__(custom_config)
-        self.build_config(custom_config)
-        self._model = None
-        self._optimizer = None
-        self._train_dataset = None
-        self._valid_dataset = None
-        self._test_dataset = None
+class OptimizerOptions(BaseModel):
+    lr: float = Field(0.001, description='Learning rate used by the optimizer.')
+    eps: float = Field(1e-8, description='Epsilon for numerical stability.')
+    weight_decay: float = Field(0.01, description='L2 regularization (weight decay) coefficient.')
+    amsgrad: bool = Field(False, description='Whether to use the AMSGrad variant of the Adam optimizer.')
 
-    def build_config(self, custom_config: dict):
-        mode = custom_config.get('mode', 'Train')
-        assert mode in {'Train', 'Test', 'API'}
 
-        # Dataset
-        dataset_config = dict()
-        custom_dataset_config = custom_config.get('dataset', dict())
-        dataset_config['train_dataset_dirpath'] = custom_dataset_config.get('train_dataset_dirpath', None)
-        dataset_config['valid_dataset_dirpath'] = custom_dataset_config.get('valid_dataset_dirpath', None)
-        dataset_config['test_dataset_dirpath'] = custom_dataset_config.get('test_dataset_dirpath', None)
-        dataset_config['dataset_name'] = custom_dataset_config.get('dataset_name', 'Younger_NP')
-        dataset_config['encode_type'] = custom_dataset_config.get('encode_type', 'node')
-        dataset_config['standard_onnx'] = custom_dataset_config.get('standard_onnx', False)
-        dataset_config['worker_number'] = custom_dataset_config.get('worker_number', 4)
+class SchedulerOptions(BaseModel):
+    start_factor: float = Field(0.1, description='Initial learning rate multiplier for warm-up.')
+    warmup_steps: int = Field(1500, description='Number of warm-up steps at the start of training.')
+    total_steps: int = Field(150000, description='Total number of training steps for the scheduler to plan the learning rate schedule.')
+    last_step: int = Field(-1, description='The last step index when resuming training. Use -1 to start fresh.')
 
-        # Model
-        model_config = dict()
-        custom_model_config = custom_config.get('model', dict())
-        model_config["model_type"] = custom_model_config.get('model_type', None)
-        model_config['node_dim'] = custom_model_config.get('node_dim', 512)
-        model_config['hidden_dim'] = custom_model_config.get('hidden_dim', 256)
-        model_config['layer_number'] = custom_model_config.get('layer_number', 3)
-        model_config['dropout'] = custom_model_config.get('dropout', 0.5)
-        model_config['stage'] = custom_model_config.get('stage', None) # This is for VGAE or GAE
-        model_config['ae_type'] = custom_model_config.get('ae_type', 'VGAE') # This is for VGAE or GAE
-        model_config['emb_checkpoint_path'] = custom_model_config.get('emb_checkpoint_path', None) # This is for VGAE or GAE
 
-        # Optimizer
-        optimizer_config = dict()
-        custom_optimizer_config = custom_config.get('optimizer', dict())
-        optimizer_config['learning_rate'] = custom_optimizer_config.get('learning_rate', 0.01)
-        optimizer_config['weight_decay'] = custom_optimizer_config.get('weight_decay', 5e-4)
+class DatasetOptions(BaseModel):
+    meta_filepath: pathlib.Path = Field(..., description='Path to the metadata file that describes the dataset.')
+    raw_dirpath: pathlib.Path = Field(..., description='Directory containing raw input data files.')
+    processed_dirpath: pathlib.Path = Field(..., description='Directory where processed dataset should be stored.')
+    worker_number: int = Field(4, description='Number of workers for parallel data loading or processing.')
 
-        # Scheduler
-        scheduler_config = dict()
-        custom_scheduler_config = custom_config.get('scheduler', dict())
-        scheduler_config['factor'] = custom_scheduler_config.get('factor', 0.2)
-        scheduler_config['min_lr'] = custom_scheduler_config.get('min_lr', 5e-5)
 
-        # Embedding
-        embedding_config = dict()
-        custom_embedding_config = custom_config.get('embedding', dict())
-        embedding_config['activate'] = custom_embedding_config.get('activate', False)
-        embedding_config['embedding_dirpath'] = custom_embedding_config.get('embedding_dirpath', None)
+class BasicNodePredictionOptions(BaseModel):
+    # Main Options
+    logging_filepath: pathlib.Path | None = Field(None, description='Logging file path where logs will be saved, default to None, which may save to a default path that is determined by the Younger.')
 
-        # API
-        api_config = dict()
-        custom_api_config = custom_config.get('api', dict())
-        api_config['meta_filepath'] = custom_api_config.get('meta_filepath', None)
-        api_config['onnx_model_dirpath'] = custom_api_config.get('onnx_model_dirpath', list())
+    scheduled_sampling: bool = Field(False, description='Enable scheduled sampling during training to gradually shift from teacher forcing to model predictions.')
+    scheduled_sampling_fixed: bool = Field(True, description='Use a fixed scheduled sampling ratio instead of dynamic scheduling.')
+    scheduled_sampling_cycle: list[int] = Field([100], description='Training epochs at which to apply scheduled sampling updates in a cyclic manner.')
+    scheduled_sampling_level: list[int] = Field([0], description='Sampling level (e.g., prediction depth or difficulty) applied at each cycle stage.')
+    scheduled_sampling_ratio: float = Field(0.15, description='Initial probability of using model predictions instead of ground truth during training (between 0 and 1).')
+    scheduled_sampling_micro: float = Field(12, description='Fine-grained control parameter for micro-level scheduled sampling behavior (e.g., per-step adjustment).')
+    mask_ratio: float = Field(..., description='Ratio of elements (e.g., input tokens) to mask during training.')
+    mask_method: Literal['Random', 'Purpose'] = Field(..., description='Strategy for masking elements: \'Random\' for uniform masking, \'Purpose\' for task-specific or guided masking.')
 
-        config = dict()
-        config['dataset'] = dataset_config
-        config['model'] = model_config
-        config['optimizer'] = optimizer_config
-        config['scheduler'] = scheduler_config
-        config['embedding'] = embedding_config
-        config['api'] = api_config
-        config['mode'] = mode
-        self.config = config
+    trainer: StandardTrainerOptions
+    evaluator: StandardEvaluatorOptions
+    predictor: StandardPredictorOptions
+    preprocessor: GraphSplitOptions
 
-    @property
-    def train_dataset(self):
-        if self._train_dataset:
-            train_dataset = self._train_dataset
-        else:
-            if self.config['mode'] == 'Train':
-                self._train_dataset = NodeDataset(
-                    self.config['dataset']['train_dataset_dirpath'],
-                    'train',
-                    dataset_name=self.config['dataset']['dataset_name'],
-                    encode_type=self.config['dataset']['encode_type'],
-                    standard_onnx=self.config['dataset']['standard_onnx'],
-                    worker_number=self.config['dataset']['worker_number'],
-                )
+    train_dataset: DatasetOptions
+    valid_dataset: DatasetOptions
+    test_dataset: DatasetOptions
 
-                if self.config['dataset']['encode_type'] == 'node':
-                    self.logger.info(f'    -> Nodes Dict Size: {len(self._train_dataset.x_dict["n2i"])}')
-                    self.node_dict_size = len(self._train_dataset.x_dict["n2i"])
-                elif self.config['dataset']['encode_type'] == 'operator':
-                    self.logger.info(f'    -> Nodes Dict Size: {len(self._train_dataset.x_dict["o2i"])}')
-                    self.node_dict_size = len(self._train_dataset.x_dict["o2i"])
-            else:
-                self._train_dataset = None
-            train_dataset = self._train_dataset
-        return train_dataset
+    model: ModelOptions
+    optimizer: OptimizerOptions
+    scheduler: SchedulerOptions
 
-    @property
-    def valid_dataset(self):
-        if self._valid_dataset:
-            valid_dataset = self._valid_dataset
-        else:
-            if self.config['mode'] == 'Train':
-                self._valid_dataset = NodeDataset(
-                    self.config['dataset']['valid_dataset_dirpath'],
-                    'valid',
-                    dataset_name=self.config['dataset']['dataset_name'],
-                    encode_type=self.config['dataset']['encode_type'],
-                    standard_onnx=self.config['dataset']['standard_onnx'],
-                    worker_number=self.config['dataset']['worker_number'],
-                )
-            else:
-                self._valid_dataset = None
-            valid_dataset = self._valid_dataset
-        return valid_dataset
 
-    @property
-    def test_dataset(self):
-        if self._test_dataset:
-            test_dataset = self._test_dataset
-        else:
-            if self.config['mode'] == 'Test':
-                self._test_dataset = NodeDataset(
-                    self.config['dataset']['test_dataset_dirpath'],
-                    'test',
-                    dataset_name=self.config['dataset']['dataset_name'],
-                    encode_type=self.config['dataset']['encode_type'],
-                    standard_onnx=self.config['dataset']['standard_onnx'],
-                    worker_number=self.config['dataset']['worker_number'],
-                )
-                if self.config['dataset']['encode_type'] == 'node':
-                    self.logger.info(f'    -> Nodes Dict Size: {len(self._test_dataset.x_dict["n2i"])}')
-                    self.node_dict_size = len(self._test_dataset.x_dict["n2i"])
-                elif self.config['dataset']['encode_type'] == 'operator':
-                    self.logger.info(f'    -> Nodes Dict Size: {len(self._test_dataset.x_dict["o2i"])}')
-                    self.node_dict_size = len(self._test_dataset.x_dict["o2i"])
-            else:
-                self._test_dataset = None
-            test_dataset = self._test_dataset
-        return test_dataset
+@register_task('ir', 'node_prediction')
+class NodePrediction(BaseTask[BasicNodePredictionOptions]):
+    OPTIONS = BasicNodePredictionOptions
+    def train(self):
+        self.valid_dataset = self._build_dataset_(
+            self.options.valid_dataset.meta_filepath,
+            self.options.valid_dataset.raw_dirpath,
+            self.options.valid_dataset.processed_dirpath,
+            'valid',
+            self.options.valid_dataset.worker_number
+        )
+        self.train_dataset = self._build_dataset_(
+            self.options.train_dataset.meta_filepath,
+            self.options.train_dataset.raw_dirpath,
+            self.options.train_dataset.processed_dirpath,
+            'train',
+            self.options.train_dataset.worker_number
+        )
+        self.model = self._build_model_(
+            self.options.model.model_type,
+            len(self.train_dataset.dicts['i2t']),
+            self.options.model.node_emb_dim,
+            self.options.model.hidden_dim,
+            self.options.model.dropout_rate,
+            self.options.model.layer_number
+        )
+        self.optimizer = self._build_optimizer_(
+            self.model,
+            self.options.optimizer.lr,
+            self.options.optimizer.eps,
+            self.options.optimizer.weight_decay,
+            self.options.optimizer.amsgrad,
+        )
+        self.scheduler = self._build_scheduler_(
+            self.optimizer,
+            self.options.scheduler.start_factor,
+            self.options.scheduler.warmup_steps,
+            self.options.scheduler.total_steps,
+            self.options.scheduler.last_step,
+        )
+        self.dicts = self.train_dataset.dicts
 
-    @property
-    def model(self):
-        if self._model:
-            model = self._model
-        else:
-            self.logger.info(f"    -> Using Model: {self.config['model']['model_type']}")
-            if self.config['model']['model_type'] == 'SAGE_NP':
-                self._model = SAGE_NP(
-                    node_dict_size=self.node_dict_size,
-                    node_dim=self.config['model']['node_dim'],
-                    hidden_dim=self.config['model']['hidden_dim'],
-                    dropout=self.config['model']['dropout'],
-                )
+        trainer = StandardTrainer(self.options.trainer)
+        trainer.run(
+            self.model,
+            self.optimizer,
+            self.scheduler,
+            self.train_dataset,
+            self.valid_dataset,
+            self._train_fn_,
+            self._valid_fn_,
+            self._on_step_begin_fn_,
+            self._on_step_end_fn_,
+            self._on_epoch_begin_fn_,
+            self._on_epoch_end_fn_,
+            'pyg',
+            self.options.logging_filepath
+        )
 
-            elif self.config['model']['model_type'] == 'GIN_NP':
-                self._model = GIN_NP(
-                    node_dict_size=self.node_dict_size,
-                    node_dim=self.config['model']['node_dim'],
-                    hidden_dim=self.config['model']['hidden_dim'],
-                    dropout=self.config['model']['dropout'],
-                    layer_number=self.config['model']['layer_number'],
-                )
+    def evaluate(self):
+        self.test_dataset = self._build_dataset_(
+            self.options.test_dataset.meta_filepath,
+            self.options.test_dataset.raw_dirpath,
+            self.options.test_dataset.processed_dirpath,
+            'test',
+            self.options.test_dataset.worker_number
+        )
+        self.model = self._build_model_(
+            len(self.test_dataset.dicts['i2t']),
+            self.options.model.node_emb_dim,
+            self.options.model.hidden_dim,
+            self.options.model.dropout_rate,
+            self.options.model.layer_number
+        )
+        self.dicts = self.test_dataset.dicts
 
-            elif self.config['model']['model_type'] == 'VGAE_NP':
-                if self.config['model']['stage'] == 'encoder':
-                    self._model = VGAE(Encoder_NP(
-                        node_dict_size=self.node_dict_size,
-                        node_dim=self.config['model']['node_dim'],
-                        hidden_dim=self.config['model']['hidden_dim'],
-                        ae_type=self.config['model']['ae_type'],
-                    ))
-                elif self.config['model']['stage'] == 'classification':
-                    self._model = LinearCls(
-                        node_dict_size=self.node_dict_size,
-                        hidden_dim=self.config['model']['hidden_dim'],
-                    )
-                    checkpoint = load_checkpoint(pathlib.Path(self.config['model']['emb_checkpoint_path']))
-                    self.ae_model= VGAE(Encoder_NP(
-                        node_dict_size=self.node_dict_size,
-                        node_dim=self.config['model']['node_dim'],
-                        hidden_dim=self.config['model']['hidden_dim'],
-                        ae_type=self.config['model']['ae_type'],
-                    ))
-                    self.ae_model.load_state_dict(checkpoint['model_state'])
-                    self.ae_model.to(self.device_descriptor)
+        evaluator = StandardEvaluator(self.options.evaluator)
+        evaluator.run(
+            self.model,
+            self.test_dataset,
+            self._evaluate_fn_,
+            'pyg',
+            self.options.logging_filepath
+        )
 
-            elif self.config['model']['model_type'] == 'GAE_NP':
-                if self.config['model']['stage'] == 'encoder':
-                    self._model = GAE(Encoder_NP(
-                        node_dict_size=self.node_dict_size,
-                        node_dim=self.config['model']['node_dim'],
-                        hidden_dim=self.config['model']['hidden_dim'],
-                        ae_type=self.config['model']['ae_type'],
-                    ))
-                elif self.config['model']['stage'] == 'classification':
-                    self._model = LinearCls(
-                        node_dict_size=self.node_dict_size,
-                        hidden_dim=self.config['model']['hidden_dim'],
-                    )
-                    checkpoint = load_checkpoint(pathlib.Path(self.config['model']['emb_checkpoint_path']))
-                    self.ae_model= GAE(Encoder_NP(
-                        node_dict_size=self.node_dict_size,
-                        node_dim=self.config['model']['node_dim'],
-                        hidden_dim=self.config['model']['hidden_dim'],
-                        ae_type=self.config['model']['ae_type'],
-                    ))
-                    self.ae_model.load_state_dict(checkpoint['model_state'])
-                    self.ae_model.to(self.device_descriptor)
-                
-            elif self.config['model']['model_type'] == 'GCN_NP':
-                self._model = GCN_NP(
-                    node_dict_size=self.node_dict_size,
-                    node_dim=self.config['model']['node_dim'],
-                    hidden_dim=self.config['model']['hidden_dim'],
-                    dropout=self.config['model']['dropout'],
-                )
-            
-            elif self.config['model']['model_type'] == 'GAT_NP':
-                self._model = GAT_NP(
-                    node_dict_size=self.node_dict_size,
-                    node_dim=self.config['model']['node_dim'],
-                    hidden_dim=self.config['model']['hidden_dim'],
-                    dropout=self.config['model']['dropout'],
-                )
-            model = self._model
+    def predict(self):
+        predictor = StandardPredictor(self.options.predictor)
+        self.dicts = NodeDataset.load_dicts(NodeDataset.load_meta(predictor.options.raw.load_dirpath.joinpath('meta.json')))
+        self.model = self._build_model_(
+            self.options.model.model_type,
+            len(self.dicts['i2t']),
+            self.options.model.node_emb_dim,
+            self.options.model.hidden_dim,
+            self.options.model.dropout_rate,
+            self.options.model.layer_number
+        )
+        predictor.run(
+            self.model,
+            self._predict_raw_fn_,
+            self.options.logging_filepath
+        )
+
+    def preprocess(self):
+        preprocessor = GraphSplit(self.options.preprocessor)
+        preprocessor.run(self.options.logging_filepath)
+
+    def _build_model_(self, model_type: str, node_emb_size: int, node_emb_dim: int, hidden_dim: int, dropout_rate: float, layer_number: int) -> torch.nn.Module:
+        model = MODELS_MAP[model_type](
+            node_emb_size,
+            node_emb_dim,
+            hidden_dim,
+            dropout_rate,
+            layer_number
+        )
         return model
 
-    @model.setter
-    def model(self, model):
-        self._model = model
+    def _build_dataset_(self, meta_filepath: pathlib.Path, raw_dirpath: pathlib.Path, processed_dirpath: pathlib.Path, split: Literal['train', 'valid', 'test'], worker_number: int) -> NodeDataset:
+        dataset = NodeDataset(
+            meta_filepath,
+            raw_dirpath,
+            processed_dirpath,
+            split=split,
+            worker_number=worker_number
+        )
+        return dataset
 
-    @property
-    def optimizer(self):
-        if self._optimizer:
-            optimizer = self._optimizer
-        else:
-            if self.config['mode'] == 'Train':
-                self._optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config['optimizer']['learning_rate'], weight_decay=self.config['optimizer']['weight_decay'])
-                self._learning_rate_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, factor=self.config['scheduler']['factor'], min_lr=self.config['scheduler']['min_lr'])
-            else:
-                self._optimizer = None
-            optimizer = self._optimizer
+    def _build_optimizer_(
+        self,
+        model: torch.nn.Module,
+        lr: float,
+        eps: float,
+        weight_decay: float,
+        amsgrad: float
+    ) -> torch.optim.Optimizer:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
         return optimizer
 
-    def update_learning_rate(self, stage: Literal['Step', 'Epoch'], **kwargs):
-        assert stage in {'Step', 'Epoch'}, f'Only Support \'Step\' or \'Epoch\''
-        if stage == 'Epoch':
-            # self._learning_rate_scheduler.step(kwargs['loss'])
-            pass
-        return
+    def _build_scheduler_(
+        self,
+        optimizer: torch.nn.Module,
+        start_factor: float,
+        warmup_steps: int,
+        total_steps: int,
+        last_step: int,
+    ) -> torch.optim.lr_scheduler.LRScheduler:
+        warmup_lr_schr = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=start_factor,
+            total_iters=warmup_steps,
+            last_epoch=last_step,
+        )
+        cosine_lr_schr = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=total_steps - warmup_steps,
+            last_epoch=last_step,
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_lr_schr, cosine_lr_schr],
+            milestones=[warmup_steps],
+            last_epoch=last_step,
+        )
+        return scheduler
 
-    def train(self, minibatch: Data) -> tuple[torch.Tensor, OrderedDict]:
-        minibatch = minibatch.to(self.device_descriptor)
-        # The following code is for VGAE.
-        if self.config['model']['stage'] == 'encoder':
-            z = self.model.encode(minibatch.x, minibatch.edge_index)
-            loss = self.model.recon_loss(z, minibatch.edge_index)
-            if self.config['model']['model_type'] == 'VGAE_NP':
-                loss = loss + 0.001 * self.model.kl_loss()
+    def _train_fn_(self, model: torch.nn.Module, minibatch: NodeData) -> list[tuple[str, torch.Tensor, Callable[[float], str]]]:
+        device_descriptor = next(model.parameters()).device
+        minibatch = minibatch.to(device_descriptor)
+        x, edge_index, golden = self._mask_(minibatch, self.dicts['t2i'], self.options.mask_ratio, self.options.mask_method)
 
-        elif self.config['model']['stage'] == 'classification':
-            self.ae_model.eval()
-            embeddings = self.ae_model.encode(minibatch.x, minibatch.edge_index).detach()
-            output = self.model(embeddings, minibatch.mask_x_position)
-            loss = torch.nn.functional.nll_loss(output, minibatch.mask_x_label)
+        if self.options.scheduled_sampling:
+            scheduled_sampling_levels = list()
+            # Only For -N, ..., -3, -2, -1
+            for i in range(-self.scheduled_sampling_level_at_epoch, 0):
+                if random.random() <= self.scheduled_sampling_ratio_at_epoch:
+                    scheduled_sampling_levels.append(i)
 
-        # This is for other methods
-        else:      
-            output = self.model(minibatch.x, minibatch.edge_index, minibatch.mask_x_position)
-            loss = torch.nn.functional.nll_loss(output, minibatch.mask_x_label)
-        
-        logs = OrderedDict({
-            'loss': (loss, lambda x: f'{x:.4f}'),
-        })
-        return loss, logs
+            if len(scheduled_sampling_levels):
+                model.eval()
+                with torch.no_grad():
+                    x, predict = self._simulate_predict_(model, minibatch, self.dicts['t2i'], scheduled_sampling_levels)
 
-    def eval(self, minibatch: Data) -> tuple[torch.Tensor, torch.Tensor]:
-        minibatch = minibatch.to(self.device_descriptor)
-        if self.config['model']['stage'] == 'encoder':
-            return 
-        if self.config['model']['stage'] == 'classification':
-            self.ae_model.eval()
-            embeddings = self.ae_model.encode(minibatch.x, minibatch.edge_index).detach()
-            output = self.model(embeddings, minibatch.mask_x_position)
-        else:
-            output = self.model(minibatch.x, minibatch.edge_index, minibatch.mask_x_position)
+                model.train()
+                x = x.detach()
 
+        output = model(x.detach(), edge_index)
+        loss = torch.nn.functional.cross_entropy(output, golden.squeeze(1), ignore_index=-1)
+        loss.backward()
+        return [('loss', loss, lambda x: f'{x:.4f}')]
+
+    def _valid_fn_(self, model: torch.nn.Module, dataloader: torch.utils.data.DataLoader) -> list[tuple[str, torch.Tensor, Callable[[float], str]]]:
+        device_descriptor = next(model.parameters()).device
+
+        outputs = list()
+        goldens = list()
+        loss = 0
         # Return Output & Golden
-        return output, minibatch.mask_x_label
+        with tqdm.tqdm(total=len(dataloader)) as progress_bar:
+            for index, minibatch in enumerate(dataloader, start=1):
+                minibatch: NodeData = minibatch.to(device_descriptor)
 
-    def eval_calculate_logs(self, all_outputs: list[torch.Tensor], all_goldens: list[torch.Tensor]) -> OrderedDict:
-        if self.config['model']['stage'] == 'encoder':
-            return
+                if self.options.scheduled_sampling:
+                    x, edge_index, golden = self._mask_(minibatch, self.dicts['t2i'], 1, self.options.mask_method, test=True)
+                    x, output = self._simulate_predict_(model, minibatch, self.dicts['t2i'], range(-self.options.scheduled_sampling_level, 0), test=True)
+                else:
+                    x, edge_index, golden = self._mask_(minibatch, self.dicts['t2i'], self.options.mask_ratio, self.options.mask_method)
+                    output = torch.softmax(model(x, edge_index), dim=-1)
+                loss += torch.nn.functional.cross_entropy(output, golden.squeeze(1), ignore_index=-1)
 
-        all_outputs = torch.cat(all_outputs)
-        all_goldens = torch.cat(all_goldens)
+                outputs.append(output)
+                goldens.append(golden)
+                progress_bar.update(1)
 
-        pred = all_outputs.max(1)[1].cpu().numpy()
-        gold = all_goldens.cpu().numpy()
+        outputs = torch.cat(outputs)
+        goldens = torch.cat(goldens).squeeze()
+
+        val_indices = goldens != -1
+        outputs = outputs[val_indices]
+        goldens = goldens[val_indices]
+
+        score = outputs.cpu().numpy()
+        pred = outputs.max(1)[1].cpu().numpy()
+        gold = goldens.cpu().numpy()
 
         print("pred[:5]:", pred[:5])
         print("gold[:5]:", gold[:5])
 
-        acc = accuracy_score(gold, pred)
-        macro_p = precision_score(gold, pred, average='macro', zero_division=0)
-        macro_r = recall_score(gold, pred, average='macro', zero_division=0)
-        macro_f1 = f1_score(gold, pred, average='macro', zero_division=0)
-        micro_f1 = f1_score(gold, pred, average='micro', zero_division=0)
+        metrics = [
+            ('loss', loss, lambda x: f'{x:.4f}'),
+            ('acc', torch.tensor(accuracy_score(gold, pred), device=x.device), lambda x: f'{x:.4f}'),
+            ('macro_p', torch.tensor(precision_score(gold, pred, average='macro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
+            ('macro_r', torch.tensor(recall_score(gold, pred, average='macro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
+            ('macro_f1', torch.tensor(f1_score(gold, pred, average='macro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
+            ('micro_f1', torch.tensor(f1_score(gold, pred, average='micro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
+            ('top3_acc', torch.tensor(top_k_accuracy_score(gold, score, k = 3, labels=range(score.shape[1])), device=x.device), lambda x: f'{x:.4f}'),
+            ('top5_acc', torch.tensor(top_k_accuracy_score(gold, score, k = 5, labels=range(score.shape[1])), device=x.device), lambda x: f'{x:.4f}') 
+        ]
+        return metrics
 
-        logs = OrderedDict({
-            'acc': (acc, lambda x: f'{x:.4f}'),
-            'macro_p': (macro_p, lambda x: f'{x:.4f}'),
-            'macro_r': (macro_r, lambda x: f'{x:.4f}'),
-            'macro_f1': (macro_f1, lambda x: f'{x:.4f}'),
-            'micro_f1': (micro_f1, lambda x: f'{x:.4f}'),
-        })
-        return logs
+    def _evaluate_fn_(self, model: torch.nn.Module, dataloader: torch.utils.data.DataLoader) -> tuple[list[str], list[torch.Tensor], list[Callable[[float], str]]]:
+        return self._valid_fn_(model, dataloader)
 
-    def api(self, device_descriptor, **kwargs):
-        meta_filepath = self.config['api']['meta_filepath']
-        onnx_model_dirpath = self.config['api']['onnx_model_dirpath']
-        assert meta_filepath, f'No Meta File.'
-        assert onnx_model_dirpath, f'No ONNX Dir.'
+    def _on_step_begin_fn_(self, step: int) -> None:
+        return
 
-        self.logger.info(f'  v Loading Meta ...')
-        meta = NodeDataset.load_meta(meta_filepath)
-        x_dict = NodeDataset.get_x_dict(meta, node_dict_size=self.config['dataset']['node_dict_size'])
-        y_dict = NodeDataset.get_y_dict(meta, task_dict_size=self.config['dataset']['task_dict_size'])
-        self.logger.info(f'    -> Tasks Dict Size: {len(x_dict)}')
-        self.logger.info(f'    -> Nodes Dict Size: {len(y_dict)}')
-        self.logger.info(f'  ^ Built.')
+    def _on_step_end_fn_(self, step: int) -> None:
+        return
 
-        self.logger.info(f'  v Loading ONNX Models')
-        datas = list()
-        onnx_model_filenames = list()
-        for onnx_model_filepath in onnx_model_dirpath.iterdir():
-            onnx_model_filenames.append(onnx_model_filepath.name)
-            instance = Instance(onnx_model_filepath)
-            standardized_graph = Network.standardize(instance.network.graph)
-            for node_index in standardized_graph.nodes():
-                operator = standardized_graph.nodes[node_index]['features']['operator']
-                attributes = standardized_graph.nodes[node_index]['features']['attributes']
-                standardized_graph.nodes[node_index]['features']['attributes'] = get_complete_attributes_of_node(attributes, operator['op_type'], operator['domain'], meta['max_inclusive_version'])
-            standardized_graph.graph.clear()
-            data = NodeDataset.get_data(standardized_graph, x_dict, y_dict, feature_get_type='none')
-            datas.append(data)
-        minibatch = Batch.from_data_list(datas)
-        self.logger.info(f'  ^ Loaded. Total - {len(datas)}.')
+    def _on_epoch_begin_fn_(self, epoch: int) -> None:
+        ssc = self.options.scheduled_sampling_cycle
+        assert all(ssc[i] < ssc[i+1] for i in range(len(ssc) - 1)), "Scheduled Sampling Cycle Must Be Strictly Increasing."
+        i = min(bisect.bisect_left(ssc, epoch), len(ssc) - 1)
+        self.scheduled_sampling_level_at_epoch = self.options.scheduled_sampling_level[i]
+        if self.options.scheduled_sampling_fixed:
+            r = self.options.scheduled_sampling_ratio
+            self.scheduled_sampling_ratio_at_epoch = r
+        else:
+            m = self.options.scheduled_sampling_micro
+            self.scheduled_sampling_ratio_at_epoch = 1 - m / (m + math.exp(epoch / m))
+        return
 
-        self.model.eval()
-        self.logger.info(f'  -> Interact Test Begin ...')
+    def _on_epoch_end_fn_(self, epoch: int) -> None:
+        return
 
-        with torch.no_grad():
-            minibatch: Data = minibatch.to(device_descriptor)
-            output, _ = self.model(minibatch.x, minibatch.edge_index, minibatch.batch)
+    def _mask_(self, minibatch: NodeData, t2i: dict[str, int], mask_ratio: float, mask_method: Literal['Random', 'Purpose'], test: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        device_descriptor = minibatch.x.device
+        x = minibatch.x.clone()
+        edge_index = minibatch.edge_index.clone()
 
-            for onnx_model_filename, output_value in zip(onnx_model_filenames, output):
-                self.logger.info(f'  -> Result - {onnx_model_filename}: {output_value}')
+        golden = x.clone()
+
+        if mask_method == 'Random':
+            mask_probability = torch.full(x.shape, mask_ratio, dtype=torch.float, device=device_descriptor)
+
+        if mask_method == 'Purpose':
+            source_index = edge_index[0]
+            target_index = edge_index[1]
+
+            last_level_nodes = target_index[~torch.isin(target_index, source_index)]
+
+            unique = torch.unique(last_level_nodes)
+            if unique.shape[0] != 0:
+                mask_ratio = mask_ratio * x.shape[0] / unique.shape[0]
+                mask_ratio = 1 if mask_ratio > 1 else mask_ratio
+
+            mask_probability = torch.zeros_like(x, dtype=torch.float, device=self.device_descriptor)
+            mask_probability[last_level_nodes] = torch.full(x.shape, mask_ratio, dtype=torch.float, device=device_descriptor)[last_level_nodes]
+
+        mask_indices = torch.bernoulli(mask_probability).to(device_descriptor).bool()
+        golden[~mask_indices] = -1
+
+        if test:
+            mask_mask_indices = torch.bernoulli(torch.full(x.shape, 1.0, dtype=torch.float, device=device_descriptor)).bool() & mask_indices
+            x[mask_mask_indices] = t2i['__MASK__']
+            # x = torch.where(mask_indices, torch.full_like(x, t2i['__MASK__']), x)
+        else:
+            mask_mask_indices = torch.bernoulli(torch.full(x.shape, 0.8, dtype=torch.float, device=device_descriptor)).bool() & mask_indices
+            x[mask_mask_indices] = t2i['__MASK__']
+            # x = torch.where(mask_indices, torch.full_like(x, t2i['__MASK__']), x)
+
+            mask_optr_indices = torch.bernoulli(torch.full(x.shape, 0.5, dtype=torch.float, device=device_descriptor)).bool() & mask_indices & ~mask_mask_indices
+            x[mask_optr_indices] = torch.randint(2, len(t2i), x.shape, dtype=torch.long, device=device_descriptor)[mask_optr_indices]
+            # rand_values = torch.randint(2, len(t2i), x.shape, dtype=torch.long, device=device_descriptor)
+            # x = torch.where(mask_optr_indices, rand_values, x)
+
+        return x, edge_index, golden
+
+    def _simulate_predict_(self, model: torch.nn.Module, minibatch: NodeData, t2i: dict[str, int], simulate_levels: Iterable[int], test: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+        device_descriptor = minibatch.x.device
+        x = minibatch.x.clone()
+        edge_index = minibatch.edge_index
+        predict = torch.zeros_like(model(x, edge_index))
+        for predict_level in simulate_levels:
+            level = minibatch.level
+            predict_nodes = torch.where(level == predict_level)[0]
+            changed_nodes = torch.where(level <= predict_level)[0]
+            old2new = torch.zeros(x.shape[0], dtype=torch.long).to(device_descriptor)
+            old2new[changed_nodes] = torch.arange(changed_nodes.shape[0], device=device_descriptor)
+
+            node_mask = torch.zeros(x.shape[0], dtype=torch.bool).to(device_descriptor)
+            node_mask[changed_nodes] = True
+
+            
+            edge_mask = node_mask[edge_index[0]] & node_mask[edge_index[1]]
+            changed_edge_index = old2new[edge_index[:, edge_mask]]
+
+            changed_x = x[changed_nodes]
+            changed_x[old2new[predict_nodes]] = t2i['__MASK__']
+            changed_predict = torch.softmax(model(changed_x, changed_edge_index), dim=-1)
+
+            if test:
+                output = torch.argmax(changed_predict, dim=-1, keepdim=True)
+            else:
+                output = torch.argmax(torch.multinomial(changed_predict, num_samples=1), dim = -1, keepdim=True)
+
+            x[predict_nodes] = output[old2new[predict_nodes]]
+            predict[predict_nodes] = changed_predict[old2new[predict_nodes]]
+            return x, predict
+
+    def _predict_raw_fn_(self, model: torch.nn.Module, load_dirpath: pathlib.Path, save_dirpath: pathlib.Path):
+        logicx_filepaths = [logicx_filepath for logicx_filepath in load_dirpath.joinpath('logicxs').iterdir()]
+        device_descriptor = next(model.parameters()).device
+
+        from torch_geometric.loader import NeighborLoader
+        from younger_logics_ir.modules import LogicX
+
+        create_dir(save_dirpath)
+
+        graph_hashes = list()
+        graph_embeddings = list()
+        for logicx_filepath in logicx_filepaths:
+            logicx = LogicX()
+            logicx.load(logicx_filepath)
+            graph_hashes.append(LogicX.hash(logicx))
+
+            data = NodeDataset.process_graph_data(logicx, self.dicts)
+            loader = NeighborLoader(
+                data,
+                num_neighbors=[-1] * len(model.encoder.layers),
+                batch_size=512,
+                input_nodes=None,
+                subgraph_type="directional",
+                directed=True
+            )
+
+            embedding_dim = model.encoder.node_.embedding_layer.embedding_dim
+            graph_embedding = torch.zeros(embedding_dim, device=device_descriptor)
+            node_count = 0
+            for batch in loader:
+                batch: NodeData = batch.to(device_descriptor)
+                out = model.encoder(batch.x, batch.edge_index)               # shape: [total_nodes_in_batch, dim]
+                center_embeddings = out[:batch.batch_size]                   # shape: [batch_size, dim]
+                graph_embedding += center_embeddings.sum(dim=0)
+                node_count += center_embeddings.shape[0]
+            assert len(logicx.dag) == node_count
+            graph_embedding = (graph_embedding/node_count).detach().cpu().numpy().tolist()
+            graph_embeddings.append(graph_embedding)
+
+        hsh_df = pandas.DataFrame(graph_hashes, columns=["logicx_hash"])
+        hsh_df.to_csv(save_dirpath.joinpath("graph_hashes.csv"), index=False)
+
+        emb_df = pandas.DataFrame(graph_embeddings, columns=[str(i) for i in range(embedding_dim)])
+        emb_df.to_csv(save_dirpath.joinpath("graph_embeddings.csv"), index=False)

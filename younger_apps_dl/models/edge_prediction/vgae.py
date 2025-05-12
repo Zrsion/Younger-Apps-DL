@@ -20,11 +20,13 @@ import torch.nn.functional as F
 from torch.nn import Embedding
 from torch_geometric.nn import GCNConv
 
+from younger_apps_dl.models import register_model
 
-class VGAE(nn.Module):
+@register_model('vgae_ep')
+class VGAE_EP(nn.Module):
 
     def __init__(self, node_dict_size, node_dim, hidden_dim, output_dim):
-        super(VGAE, self).__init__()
+        super(VGAE_EP, self).__init__()
         self.node_embedding_layer = Embedding(node_dict_size, node_dim)
         self.conv_1 = GCNConv(node_dim, hidden_dim)
         self.conv_mu = GCNConv(hidden_dim, output_dim)

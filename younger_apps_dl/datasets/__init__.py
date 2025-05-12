@@ -30,3 +30,5 @@ def register_dataset(name: str):
     return wrapper
 
 from .graph import *
+from .node import *
+from .edge import *
