@@ -16,11 +16,12 @@
 
 import pathlib
 
-from younger.commons.logging import set_logger, use_logger, logger
+from younger.commons.logging import set_logger, use_logger, get_logger
 
 from younger_apps_dl import __thename__
-
 
 def equip_logger(logging_filepath: pathlib.Path | str | None = None):
     set_logger(__thename__, mode='both', level='INFO', logging_filepath=logging_filepath)
     use_logger(__thename__)
+
+logger = get_logger(__thename__)

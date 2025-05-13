@@ -26,19 +26,49 @@ from younger_apps_dl.models import register_model
 class SAGE_EP(nn.Module):
     def __init__(self, node_dict_size, node_dim, hidden_dim, output_dim, dropout_rate, layer_number=4):
         super(SAGE_EP, self).__init__()
-        self.node_embedding_layer = Embedding(node_dict_size, node_dim)
-        self.conv1 = SAGEConv(node_dim, hidden_dim)
-        self.conv2 = SAGEConv(hidden_dim, output_dim)
+
         self.dropout_rate = dropout_rate
+        self.node_embedding_layer = Embedding(node_dict_size, node_dim)
+        
+        self.layers = nn.ModuleList()
+        
+        dims = [node_dim]
+        layer_number = layer_number - 1  # - 1 for the first layer
+
+        middle_dim = 2 * hidden_dim
+        step_up = (middle_dim - node_dim) // (layer_number // 2)
+        
+        # Construct layers with step-up for the first half of layers
+        for i in range(layer_number // 2):
+            next_dim = dims[-1] + step_up
+            dims.append(next_dim)
+
+        step_down = (middle_dim - hidden_dim) // (layer_number - layer_number // 2)
+        
+        # Construct layers with step-down for the second half of layers
+        for i in range(layer_number // 2, layer_number):
+            next_dim = dims[-1] - step_down
+            dims.append(next_dim)
+        dims.append(output_dim)
+        
+        print('debugging --- dims: ', dims)
+        
+        for i in range(layer_number):
+            self.layers.append(SAGEConv(dims[i], dims[i + 1]))
+        print(self.layers)
+        
         self.initialize_parameters()
 
     def encode(self, data):
         x, edge_index = data.x, data.edge_index
         x = self.node_embedding_layer(x).squeeze(1)
-        x = F.relu(self.conv1(x, edge_index))
         x = F.dropout(x, p=self.dropout_rate, training=self.training)
-        x = self.conv2(x, edge_index)
-
+        
+        for index, layer in enumerate(self.layers):
+            x = layer(x, edge_index)
+            if index < len(self.layers) - 1:
+                x = F.relu(x)
+                x = F.dropout(x, p=self.dropout_rate, training=self.training)
         return x
 
     def decode(self, z, edge_label_index):

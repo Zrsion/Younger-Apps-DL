@@ -24,7 +24,7 @@ import pathlib
 
 from typing import Literal, Callable, Iterable
 from pydantic import BaseModel, Field
-from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score, top_k_accuracy_score
+from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.metrics import roc_auc_score, f1_score, average_precision_score
 
 from younger.commons.io import create_dir
@@ -32,17 +32,16 @@ from younger.commons.io import create_dir
 from younger_apps_dl.tasks import BaseTask, register_task
 from younger_apps_dl.engines import StandardTrainer, StandardTrainerOptions, StandardEvaluator, StandardEvaluatorOptions, StandardPredictor, StandardPredictorOptions, EdgeDatasetSplit, EdgeDatasetSplitOptions
 from younger_apps_dl.datasets import EdgeData, EdgeDataset 
-from younger_apps_dl.models import VGAE_EP, GAT_EP, GCN_EP, SAGE_EP 
+from younger_apps_dl.models import  GAT_EP, GCN_EP, SAGE_EP 
 
 MODELS_MAP = {
     'GAT': GAT_EP,
     'GCN': GCN_EP,
     'SAGE': SAGE_EP,
-    'VGAE': VGAE_EP,
 }
 
 class ModelOptions(BaseModel):
-    model_type: Literal['AE', 'GAT', 'GCN', 'GIN', 'SAGE'] = Field('SAGE', description='The identifier of the model type, e.g., \'SAGE\', etc.')
+    model_type: Literal['GAT', 'GCN', 'SAGE'] = Field('SAGE', description='The identifier of the model type, e.g., \'SAGE\', etc.')
     node_emb_dim: int = Field(512, description='Node embedding dimensionality.')
     hidden_dim: int = Field(256, description='Hidden layer dimensionality within the model.')
     output_dim: int = Field(256, description='Output layer dimensionality.')
@@ -71,7 +70,7 @@ class DatasetOptions(BaseModel):
     worker_number: int = Field(4, description='Number of workers for parallel data loading or processing.')
 
 
-class BasicNodePredictionOptions(BaseModel):
+class BasicEdgePredictionOptions(BaseModel):
     # Main Options
     logging_filepath: pathlib.Path | None = Field(None, description='Logging file path where logs will be saved, default to None, which may save to a default path that is determined by the Younger.')
 
@@ -99,8 +98,8 @@ class BasicNodePredictionOptions(BaseModel):
 
 
 @register_task('ir', 'edge_prediction')
-class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
-    OPTIONS = BasicNodePredictionOptions
+class EdgePrediction(BaseTask[BasicEdgePredictionOptions]):
+    OPTIONS = BasicEdgePredictionOptions
     def train(self):
         self.valid_dataset = self._build_dataset_(
             self.options.valid_dataset.meta_filepath,
@@ -291,12 +290,6 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
                 loss += criterion(output.reshape(-1), minibatch.edge_label)
                 edge_label = minibatch.edge_label
                 golden = edge_label.clone()
-                # if self.options.scheduled_sampling:
-                #     x, edge_index, golden = self._mask_(minibatch, self.dicts['t2i'], 1, self.options.mask_method, test=True)
-                #     x, output = self._simulate_predict_(model, minibatch, self.dicts['t2i'], range(-self.options.scheduled_sampling_level, 0), test=True)
-                # else:
-                #     x, edge_index, golden = self._mask_(minibatch, self.dicts['t2i'], self.options.mask_ratio, self.options.mask_method)
-                #     output = torch.softmax(model(x, edge_index), dim=-1)
 
                 outputs.append(output.view(-1).sigmoid())
                 goldens.append(golden)
@@ -311,11 +304,11 @@ class EdgePrediction(BaseTask[BasicNodePredictionOptions]):
         outputs = outputs[val_indices]
         goldens = goldens[val_indices]
 
-        print("pred[:5]:", pred[:5])
-        print("gold[:5]:", goldens[:5])
+        print(f"pred[:5], pred[len(pred)//2:len(pred)//2+5]: {pred[:5]}, {pred[len(pred)//2:len(pred)//2+5]}")
+        print(f"gold[:5], goldens[len(goldens)//2:len(goldens)//2+5]: {goldens[:5]}, {goldens[len(goldens)//2:len(goldens)//2+5]}")
 
         metrics = [
-            ('loss', loss, lambda x: f'{x:.4f}'),
+            ('loss', loss/len(dataloader), lambda x: f'{x:.4f}'),
             ('auc', torch.tensor(roc_auc_score(goldens, outputs)), lambda x: f'{x:.4f}'),
             ('ap', torch.tensor(average_precision_score(goldens, outputs)), lambda x: f'{x:.4f}'),
             ('macro_p', torch.tensor(precision_score(goldens, pred, average='macro', zero_division=0)), lambda x: f'{x:.4f}'),

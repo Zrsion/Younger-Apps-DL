@@ -320,11 +320,11 @@ class NodePrediction(BaseTask[BasicNodePredictionOptions]):
         pred = outputs.max(1)[1].cpu().numpy()
         gold = goldens.cpu().numpy()
 
-        print("pred[:5]:", pred[:5])
-        print("gold[:5]:", gold[:5])
+        print(f"pred[:5], pred[len(pred)//2:len(pred)//2+5]: {pred[:5]}, {pred[len(pred)//2:len(pred)//2+5]}")
+        print(f"gold[:5], goldens[len(goldens)//2:len(goldens)//2+5]: {goldens[:5]}, {goldens[len(goldens)//2:len(goldens)//2+5]}")
 
         metrics = [
-            ('loss', loss, lambda x: f'{x:.4f}'),
+            ('loss', loss/len(dataloader), lambda x: f'{x:.4f}'),
             ('acc', torch.tensor(accuracy_score(gold, pred), device=x.device), lambda x: f'{x:.4f}'),
             ('macro_p', torch.tensor(precision_score(gold, pred, average='macro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
             ('macro_r', torch.tensor(recall_score(gold, pred, average='macro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
