@@ -24,7 +24,7 @@ from younger_apps_dl.models import register_model
 
 @register_model('gat_ep')
 class GAT_EP(nn.Module):
-    def __init__(self, node_dict_size, node_dim, hidden_dim, output_dim, dropout_rate, layer_number=4):
+    def __init__(self, node_dict_size, node_dim, hidden_dim, output_dim, dropout_rate, total_layer_number=4):
         super(GAT_EP, self).__init__()
         self.dropout_rate = dropout_rate
         self.node_embedding_layer = Embedding(node_dict_size, node_dim)
@@ -32,7 +32,7 @@ class GAT_EP(nn.Module):
         self.layers = nn.ModuleList()
         
         dims = [node_dim]
-        layer_number = layer_number - 1  # - 1 for the first layer
+        layer_number = total_layer_number - 1  # - 1 for the first layer
 
         middle_dim = 2 * hidden_dim
         step_up = (middle_dim - node_dim) // (layer_number // 2)
@@ -52,8 +52,8 @@ class GAT_EP(nn.Module):
         
         print('debugging --- dims: ', dims)
         
-        for i in range(layer_number):
-            self.layers.append(GATConv(dims[i], dims[i + 1], heads=8, concat=False))
+        for i in range(total_layer_number):
+            self.layers.append(GATConv(dims[i], dims[i+1], heads=4, concat=False))
         print(self.layers)
         
         self.initialize_parameters()

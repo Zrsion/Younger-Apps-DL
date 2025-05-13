@@ -47,9 +47,7 @@ class SAGE_NP(nn.Module):
         dims.append(node_dict_size)
         print('debugging --- dims: ', dims)
 
-        self.layers.append(SAGEConv(dims[0], dims[1]))
-
-        for i in range(1, 1 + layer_number):
+        for i in range(total_layer_number):
             self.layers.append(SAGEConv(dims[i], dims[i+1]))
 
         print(self.layers)

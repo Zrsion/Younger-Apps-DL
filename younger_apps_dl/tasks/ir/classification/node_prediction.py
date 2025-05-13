@@ -31,10 +31,9 @@ from younger.commons.io import create_dir
 from younger_apps_dl.tasks import BaseTask, register_task
 from younger_apps_dl.engines import StandardTrainer, StandardTrainerOptions, StandardEvaluator, StandardEvaluatorOptions, StandardPredictor, StandardPredictorOptions, GraphSplit, GraphSplitOptions
 from younger_apps_dl.datasets import NodeData, NodeDataset 
-from younger_apps_dl.models import Encoder_NP, LinearCls, GAT_NP, GCN_NP, GIN_NP, SAGE_NP 
+from younger_apps_dl.models import GAT_NP, GCN_NP, GIN_NP, SAGE_NP 
 
 MODELS_MAP = {
-    'AE': Encoder_NP,
     'GAT': GAT_NP,
     'GCN': GCN_NP,
     'GIN': GIN_NP,
@@ -42,7 +41,7 @@ MODELS_MAP = {
 }
 
 class ModelOptions(BaseModel):
-    model_type: Literal['AE', 'GAT', 'GCN', 'GIN', 'SAGE'] = Field('SAGE', description='The identifier of the model type, e.g., \'SAGE\', etc.')
+    model_type: Literal['GAT', 'GCN', 'GIN', 'SAGE'] = Field('SAGE', description='The identifier of the model type, e.g., \'SAGE\', etc.')
     node_emb_dim: int = Field(512, description='Node embedding dimensionality.')
     hidden_dim: int = Field(256, description='Hidden layer dimensionality within the model.')
     dropout_rate: float = Field(0.5, description='Dropout probability used for regularization.')
