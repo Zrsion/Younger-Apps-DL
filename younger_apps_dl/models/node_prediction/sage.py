@@ -91,10 +91,8 @@ class SAGE_NP(nn.Module):
     def forward(self, x, edge_index):
         x = self.node_embedding_layer(x).squeeze(1)
         x = F.dropout(x, p=self.dropout_rate, training=self.training)
-        # print(x.shape)
         for index, layer in enumerate(self.layers):
             x = layer(x, edge_index)
-            # print(f'layer:{index}/{len(self.layers)}--{x.shape}')
             if index < len(self.layers) - 1:
                 x = F.relu(x)
                 x = F.dropout(x, p=self.dropout_rate, training=self.training) 
