@@ -30,6 +30,7 @@ from sklearn.metrics import roc_auc_score, f1_score, average_precision_score
 from younger.commons.io import create_dir
 
 from younger_apps_dl.tasks import BaseTask, register_task
+from younger_apps_dl.commons.utils import get_model_parameters_number
 from younger_apps_dl.engines import StandardTrainer, StandardTrainerOptions, StandardEvaluator, StandardEvaluatorOptions, StandardPredictor, StandardPredictorOptions, EdgeDatasetSplit, EdgeDatasetSplitOptions
 from younger_apps_dl.datasets import EdgeData, EdgeDataset 
 from younger_apps_dl.models import  GAT_EP, GCN_EP, SAGE_EP 
@@ -166,6 +167,7 @@ class EdgePrediction(BaseTask[BasicEdgePredictionOptions]):
             self.options.test_dataset.worker_number
         )
         self.model = self._build_model_(
+            self.options.model.model_type,
             len(self.test_dataset.dicts['i2t']),
             self.options.model.node_emb_dim,
             self.options.model.hidden_dim,

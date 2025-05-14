@@ -29,7 +29,7 @@ from torch.utils.data.distributed import DistributedSampler
 from younger.commons.io import create_dir
 from younger.commons.utils import no_operation
 
-from younger_apps_dl.commons.utils import get_device_descriptor, make_reproducible, broadcast_object
+from younger_apps_dl.commons.utils import get_device_descriptor, make_reproducible, broadcast_object 
 from younger_apps_dl.commons.logging import logger, equip_logger
 from younger_apps_dl.commons.checkpoint import load_checkpoint, save_checkpoint, Checkpoint
 
@@ -135,8 +135,6 @@ class StandardTrainer(BaseEngine[StandardTrainerOptions]):
         start_from_step: int = 0
         start_from_itr: int = 0
         equip_logger(logging_filepath)
-        print(logger)
-        print(logger.handlers)
         if self.options.resume_filepath is None:
             logger.info(f'-> Train from scratch.')
         else:

@@ -21,7 +21,7 @@ import pathlib
 from typing import Any, Literal, Callable
 from pydantic import BaseModel, Field
 
-from younger_apps_dl.commons.utils import get_device_descriptor
+from younger_apps_dl.commons.utils import get_device_descriptor, get_model_parameters_number
 from younger_apps_dl.commons.logging import equip_logger, logger
 from younger_apps_dl.commons.checkpoint import load_checkpoint
 
@@ -31,7 +31,7 @@ from younger_apps_dl.engines import BaseEngine, register_engine
 class StandardEvaluatorOptions(BaseModel):
     # Checkpoint Options
     checkpoint_filepath: pathlib.Path  = Field(..., description='Path to load checkpoint.')
-
+    node_number: int  = Field(2, gt=1, description='Number of devices participating in distributed training. It should be > 1.')
     # Iteration Options
     batch_size: int = Field(32, ge=1, description='Batch size for validation.')
 
@@ -65,6 +65,18 @@ class StandardEvaluator(BaseEngine[StandardEvaluatorOptions]):
         logger.info(f'    v Loading Parameters ...')
         model.load_state_dict(checkpoint.model_state_dict)
         logger.info(f'    ^ Loaded.')
+        parameters_number = get_model_parameters_number(model)
+        parameters_number_str = str()
+        for name, number in parameters_number.items():
+            parameters_number_str += f'{name}: {number} Elements ;\n'
+        parameters_number_str += f'Total: {sum(parameters_number.values())} Elements .\n'
+        logger.info(
+            f'\n======= v Model Architecture v ======='
+            f'\n{model}'
+            f'\n'
+            f'\n====== v Number of Parameters v ======'
+            f'\n{parameters_number_str}'
+        )
 
         self.evaluate(
             model,
@@ -93,7 +105,7 @@ class StandardEvaluator(BaseEngine[StandardEvaluatorOptions]):
         tic = time.time()
         model.eval()
         with torch.no_grad():
-            metric_names, metric_values, metric_formats = evaluate_fn(model, dataloader)
+            metric_names, metric_values, metric_formats = zip(*evaluate_fn(model, dataloader))
             self.log(metric_names, metric_values, metric_formats)
 
         toc = time.time()

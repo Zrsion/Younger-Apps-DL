@@ -164,6 +164,7 @@ class NodePrediction(BaseTask[BasicNodePredictionOptions]):
             self.options.test_dataset.worker_number
         )
         self.model = self._build_model_(
+            self.options.model.model_type,
             len(self.test_dataset.dicts['i2t']),
             self.options.model.node_emb_dim,
             self.options.model.hidden_dim,
