@@ -209,7 +209,7 @@ class GraphDataset(Dataset):
 
         x = cls.process_graph_x(logicx, dicts, nxid2pgid)
         edge_index = cls.process_graph_edge_index(logicx, nxid2pgid)
-        if logicx.dag.graph['level']:
+        if logicx.dag.graph.get('level'):
             level = cls.process_graph_level(logicx, nxid2pgid)
             graph_data = GraphData(x=x, edge_index=edge_index, level=level)
         else:
