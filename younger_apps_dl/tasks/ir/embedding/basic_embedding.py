@@ -428,7 +428,7 @@ class BasicEmbedding(BaseTask[BasicEmbeddingOptions]):
             return x, predict
 
     def _predict_raw_fn_(self, model: torch.nn.Module, load_dirpath: pathlib.Path, save_dirpath: pathlib.Path):
-        logicx_filepaths = [logicx_filepath for logicx_filepath in load_dirpath.joinpath('logicxs').iterdir()]
+        logicx_filepaths = [logicx_filepath for logicx_filepath in load_dirpath.joinpath('skeleton').iterdir()]
         device_descriptor = next(model.parameters()).device
 
         from torch_geometric.loader import NeighborLoader
@@ -453,13 +453,16 @@ class BasicEmbedding(BaseTask[BasicEmbeddingOptions]):
                 directed=True
             )
 
-            embedding_dim = model.encoder.node_.embedding_layer.embedding_dim
-            graph_embedding = torch.zeros(embedding_dim, device=device_descriptor)
+            graph_embedding = None
+            embedding_dim = None
             node_count = 0
             for batch in loader:
                 batch: GraphData = batch.to(device_descriptor)
                 out = model.encoder(batch.x, batch.edge_index)               # shape: [total_nodes_in_batch, dim]
                 center_embeddings = out[:batch.batch_size]                   # shape: [batch_size, dim]
+                if graph_embedding is None:
+                    embedding_dim = out.shape[1]
+                    graph_embedding = torch.zeros(embedding_dim, device=device_descriptor)
                 graph_embedding += center_embeddings.sum(dim=0)
                 node_count += center_embeddings.shape[0]
             assert len(logicx.dag) == node_count
