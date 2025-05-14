@@ -33,19 +33,17 @@ class SAGE_EP(nn.Module):
         self.layers = nn.ModuleList()
         
         dims = [node_dim]
-        layer_number = layer_number - 1  # - 1 for the first layer
+        layer_number = total_layer_number - 1  # - 1 for the first layer
 
         middle_dim = 2 * hidden_dim
         step_up = (middle_dim - node_dim) // (layer_number // 2)
         
-        # Construct layers with step-up for the first half of layers
         for i in range(layer_number // 2):
             next_dim = dims[-1] + step_up
             dims.append(next_dim)
 
         step_down = (middle_dim - hidden_dim) // (layer_number - layer_number // 2)
         
-        # Construct layers with step-down for the second half of layers
         for i in range(layer_number // 2, layer_number):
             next_dim = dims[-1] - step_down
             dims.append(next_dim)

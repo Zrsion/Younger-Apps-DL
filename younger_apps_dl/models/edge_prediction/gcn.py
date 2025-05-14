@@ -32,7 +32,7 @@ class GCN_EP(nn.Module):
         self.layers = nn.ModuleList()
         
         dims = [node_dim]
-        layer_number = layer_number - 1  # - 1 for the first layer
+        layer_number = total_layer_number - 1  # - 1 for the first layer
 
         middle_dim = 2 * hidden_dim
         step_up = (middle_dim - node_dim) // (layer_number // 2)

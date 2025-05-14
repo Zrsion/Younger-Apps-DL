@@ -48,7 +48,7 @@ class GAT_NP(nn.Module):
         print('debugging --- dims: ', dims)
 
         for i in range(total_layer_number):
-            self.layers.append(GATConv(dims[i], dims[i+1], heads=8, concat=False))
+            self.layers.append(GATConv(dims[i], dims[i+1], heads=4, concat=False))
 
         print(self.layers)
         self.initialize_parameters()

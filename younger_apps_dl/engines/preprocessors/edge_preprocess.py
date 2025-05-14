@@ -93,6 +93,7 @@ class EdgeDatasetSplit(BaseEngine[EdgeDatasetSplitOptions]):
                     max_graph_size_meet = True
                 else:
                     max_graph_size_meet = False
+                    print(f'find a large graph: {logicx_filepath.name} with size {graph_size}')
                 if not (min_graph_size_meet and max_graph_size_meet):
                     continue
 

@@ -447,7 +447,7 @@ class BasicEmbedding(BaseTask[BasicEmbeddingOptions]):
             loader = NeighborLoader(
                 data,
                 num_neighbors=[-1] * len(model.encoder.layers),
-                batch_size=512,
+                batch_size=25600,
                 input_nodes=None,
                 subgraph_type="directional",
                 directed=True
