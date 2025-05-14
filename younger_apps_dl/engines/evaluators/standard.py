@@ -31,7 +31,6 @@ from younger_apps_dl.engines import BaseEngine, register_engine
 class StandardEvaluatorOptions(BaseModel):
     # Checkpoint Options
     checkpoint_filepath: pathlib.Path  = Field(..., description='Path to load checkpoint.')
-    node_number: int  = Field(2, gt=1, description='Number of devices participating in distributed training. It should be > 1.')
     # Iteration Options
     batch_size: int = Field(32, ge=1, description='Batch size for validation.')
 
@@ -43,7 +42,7 @@ class StandardEvaluator(BaseEngine[StandardEvaluatorOptions]):
     def log(self, metric_names: list[str], metric_values: list[torch.Tensor], metric_formats: list[Callable[[float], str]]) -> None:
         logs = list()
         for metric_name, metric_value, metric_format in zip(metric_names, metric_values, metric_formats):
-            logs.append(f'[{metric_name}]={metric_format(float(metric_value / self.options.node_number))}')
+            logs.append(f'[{metric_name}]={metric_format(float(metric_value))}')
         logger.info(f'Evaluation Results - {" ".join(logs)}')
 
     def run(
