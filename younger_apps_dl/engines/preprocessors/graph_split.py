@@ -84,6 +84,8 @@ class GraphSplit(BaseEngine[GraphSplitOptions]):
 
         logicx_filepaths = sorted([logicx_filepath for logicx_filepath in self.options.load_dirpath.iterdir()])
 
+        uuid2tuid = dict() # {uuid: tuid}
+
         logger.info(f'Scan Load Directory & Generate Node UUID List ...')
         logicxs: list[LogicX] = list() # [logicx1, logicx2, ...]
         logicx_hashes: list[str] = list() # [logicx1_hash, logicx2_hash, ...]
@@ -116,7 +118,8 @@ class GraphSplit(BaseEngine[GraphSplitOptions]):
 
                 for node_index in logicx.dag.nodes:
                     uuid = logicx.dag.nodes[node_index]['node_uuid']
-
+                    tuid = logicx.dag.nodes[node_index]['node_tuid']
+                    uuid2tuid[uuid] = tuid
                     uuid_positions = all_uuid_positions.get(uuid, dict())
                     node_indices = uuid_positions.get(logicx_index, set())
                     node_indices.add(node_index)
@@ -224,15 +227,15 @@ class GraphSplit(BaseEngine[GraphSplitOptions]):
 
         training_dataset_save_dirpath = self.options.save_dirpath.joinpath('training')
         logger.info(f'Saving \'Training\' Dataset into {training_dataset_save_dirpath.absolute()} ... ')
-        self.__class__.save_dataset(uuid_occurence, split_with_hashes[:exact_training_dataset_size], training_dataset_save_dirpath, ignored)
+        self.__class__.save_dataset(uuid_occurence, split_with_hashes[:exact_training_dataset_size], training_dataset_save_dirpath, ignored, uuid2tuid)
 
         validation_dataset_save_dirpath = self.options.save_dirpath.joinpath('validation')
         logger.info(f'Saving \'Validation\' Dataset into {validation_dataset_save_dirpath.absolute()} ... ')
-        self.__class__.save_dataset(uuid_occurence, split_with_hashes[exact_training_dataset_size:exact_training_dataset_size+exact_validation_dataset_size], validation_dataset_save_dirpath, ignored)
+        self.__class__.save_dataset(uuid_occurence, split_with_hashes[exact_training_dataset_size:exact_training_dataset_size+exact_validation_dataset_size], validation_dataset_save_dirpath, ignored, uuid2tuid)
 
         test_dataset_save_dirpath = self.options.save_dirpath.joinpath('test')
         logger.info(f'Saving \'Test\' Dataset into {test_dataset_save_dirpath.absolute()} ... ')
-        self.__class__.save_dataset(uuid_occurence, split_with_hashes[exact_training_dataset_size+exact_validation_dataset_size:exact_training_dataset_size+exact_validation_dataset_size+exact_test_dataset_size], test_dataset_save_dirpath, ignored)
+        self.__class__.save_dataset(uuid_occurence, split_with_hashes[exact_training_dataset_size+exact_validation_dataset_size:exact_training_dataset_size+exact_validation_dataset_size+exact_test_dataset_size], test_dataset_save_dirpath, ignored, uuid2tuid)
 
     @classmethod
     def retrieve_split(cls, logicx: LogicX, center_node_indices: list[str], split_scale: int, split_limit: int, method: Literal['Random', 'Cascade', 'RandomFull', 'CascadeFull', 'Window']) -> LogicX:
@@ -295,7 +298,8 @@ class GraphSplit(BaseEngine[GraphSplitOptions]):
         subgraph.add_edges_from(induced_subgraph.edges(data=False))
         for node_index in subgraph.nodes():
             subgraph.nodes[node_index]['node_uuid'] = induced_subgraph.nodes[node_index]['node_uuid']
-
+            subgraph.nodes[node_index]['node_indegree'] = subgraph.in_degree(node_index)
+            subgraph.nodes[node_index]['node_outdegree'] = subgraph.out_degree(node_index)
         node_ods: dict[str, int] = {node_index: subgraph.out_degree(node_index) for node_index in subgraph.nodes}
         bfs_queue = collections.deque()
         for node_index in subgraph.nodes:
@@ -315,12 +319,13 @@ class GraphSplit(BaseEngine[GraphSplitOptions]):
         return split
 
     @classmethod
-    def save_dataset(cls, uuid_occurence: dict[str, int], split_with_hashes: list[tuple[str, LogicX]], save_dirpath: pathlib.Path, ignored: set[str]):
+    def save_dataset(cls, uuid_occurence: dict[str, int], split_with_hashes: list[tuple[str, LogicX]], save_dirpath: pathlib.Path, ignored: set[str], uuid2tuid):
         node_types = [node_type for node_type, node_occr in uuid_occurence.items() if node_type not in ignored]
         item_names = [item_name for item_name, item_lgcx in split_with_hashes]
         meta = dict(
             node_types = node_types,
             item_names = item_names,
+            uuid2tuid = uuid2tuid,
         )
 
         items_dirpath = save_dirpath.joinpath('items')

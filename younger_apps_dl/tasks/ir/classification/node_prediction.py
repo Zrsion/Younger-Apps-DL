@@ -13,7 +13,8 @@
 # LICENSE file in the root directory of this source tree.
 ########################################################################
 
-
+import ast
+import onnx
 import math
 import tqdm
 import torch
@@ -22,11 +23,11 @@ import random
 import pandas
 import pathlib
 
-from typing import Literal, Callable, Iterable
+from typing import Literal, Callable, Iterable, Any
 from pydantic import BaseModel, Field
 from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score, top_k_accuracy_score
 
-from younger.commons.io import create_dir
+from younger.commons.io import create_dir, load_json
 
 from younger_apps_dl.tasks import BaseTask, register_task
 from younger_apps_dl.engines import StandardTrainer, StandardTrainerOptions, StandardEvaluator, StandardEvaluatorOptions, StandardPredictor, StandardPredictorOptions, GraphSplit, GraphSplitOptions
@@ -72,6 +73,7 @@ class DatasetOptions(BaseModel):
 class BasicNodePredictionOptions(BaseModel):
     # Main Options
     logging_filepath: pathlib.Path | None = Field(None, description='Logging file path where logs will be saved, default to None, which may save to a default path that is determined by the Younger.')
+    uuid2tuid_mapping_filepath: pathlib.Path | None = Field(None, description='Load this dict for mapping node_uuid to node_tuid.') 
 
     scheduled_sampling: bool = Field(False, description='Enable scheduled sampling during training to gradually shift from teacher forcing to model predictions.')
     scheduled_sampling_fixed: bool = Field(True, description='Use a fixed scheduled sampling ratio instead of dynamic scheduling.')
@@ -286,11 +288,56 @@ class NodePrediction(BaseTask[BasicNodePredictionOptions]):
         loss.backward()
         return [('loss', loss, lambda x: f'{x:.4f}')]
 
+    def _check_valid_(self, node_uuids: str, in_degrees: int, out_degrees: int) -> float:
+        uuid2tuid = load_json(self.options.uuid2tuid_mapping_filepath) 
+        total_nodes = len(node_uuids)
+        valid_node_count = 0
+        cannot_valid_node_count = 0
+        for node_uuid, in_degree, out_degree in zip(node_uuids, in_degrees, out_degrees):
+            check_flag = False
+            try:
+                op_type = ast.literal_eval(uuid2tuid[node_uuid][len('operator-'):])[0]
+                domain = ast.literal_eval(uuid2tuid[node_uuid][len('operator-'):])[1]
+                schema = onnx.defs.get_schema(op_type, domain=domain)
+            except Exception as e:
+                cannot_valid_node_count += 1
+                continue
+            if len(schema.inputs) > 0:
+                last_input = schema.inputs[-1]
+                if last_input.option.value == last_input.option.Optional.value:
+                    if in_degree <= len(schema.inputs):
+                        check_flag = True
+                if last_input.option.value == last_input.option.Variadic.value:
+                    if in_degree >= len(schema.inputs) - 1:
+                        check_flag = True
+                else:
+                    if in_degree == len(schema.inputs):
+                        check_flag = True
+            if len(schema.outputs) > 0:
+                last_output = schema.outputs[-1]
+                if last_output.option.value == last_output.option.Optional.value:
+                    if out_degree <= len(schema.outputs):
+                        check_flag = True
+                if last_output.option.value == last_output.option.Variadic.value:
+                    if out_degree >= len(schema.outputs) - 1:
+                        check_flag = True
+                else:
+                    if out_degree == len(schema.outputs):
+                        check_flag = True
+            if check_flag:
+                valid_node_count += 1
+        valid_nodes_ratio = valid_node_count / total_nodes
+        failed2check_valid_nodes_ratio = cannot_valid_node_count / total_nodes
+        return valid_nodes_ratio, failed2check_valid_nodes_ratio 
+
+
     def _valid_fn_(self, model: torch.nn.Module, dataloader: torch.utils.data.DataLoader) -> list[tuple[str, torch.Tensor, Callable[[float], str]]]:
         device_descriptor = next(model.parameters()).device
 
         outputs = list()
         goldens = list()
+        in_degrees = list()
+        out_degrees = list()
         loss = 0
         # Return Output & Golden
         with tqdm.tqdm(total=len(dataloader)) as progress_bar:
@@ -305,8 +352,15 @@ class NodePrediction(BaseTask[BasicNodePredictionOptions]):
                     output = torch.softmax(model(x, edge_index), dim=-1)
                 loss += torch.nn.functional.cross_entropy(output, golden.squeeze(1), ignore_index=-1)
 
+                src, dst = edge_index
+                out_degree = torch.bincount(src, minlength=len(x))
+                in_degree = torch.bincount(dst, minlength=len(x))
+
+                in_degrees.append(in_degree)
+                out_degrees.append(out_degree)
                 outputs.append(output)
                 goldens.append(golden)
+                
                 progress_bar.update(1)
 
         outputs = torch.cat(outputs)
@@ -320,9 +374,13 @@ class NodePrediction(BaseTask[BasicNodePredictionOptions]):
         pred = outputs.max(1)[1].cpu().numpy()
         gold = goldens.cpu().numpy()
 
+        pred_uuids = [self.dicts['i2t'][pred_output] for pred_output in pred]
+        in_degrees = torch.cat(in_degrees)[val_indices]
+        out_degrees = torch.cat(out_degrees)[val_indices]
+        valid_nodes_ratio, failed2check_valid_nodes_ratio = self._check_valid_(pred_uuids, in_degrees, out_degrees)        
+
         print(f"pred[:5], pred[len(pred)//2:len(pred)//2+5]: {pred[:5]}, {pred[len(pred)//2:len(pred)//2+5]}")
         print(f"gold[:5], goldens[len(goldens)//2:len(goldens)//2+5]: {goldens[:5]}, {goldens[len(goldens)//2:len(goldens)//2+5]}")
-
         metrics = [
             ('loss', loss/len(dataloader), lambda x: f'{x:.4f}'),
             ('acc', torch.tensor(accuracy_score(gold, pred), device=x.device), lambda x: f'{x:.4f}'),
@@ -331,7 +389,9 @@ class NodePrediction(BaseTask[BasicNodePredictionOptions]):
             ('macro_f1', torch.tensor(f1_score(gold, pred, average='macro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
             ('micro_f1', torch.tensor(f1_score(gold, pred, average='micro', zero_division=0), device=x.device), lambda x: f'{x:.4f}'),
             ('top3_acc', torch.tensor(top_k_accuracy_score(gold, score, k = 3, labels=range(score.shape[1])), device=x.device), lambda x: f'{x:.4f}'),
-            ('top5_acc', torch.tensor(top_k_accuracy_score(gold, score, k = 5, labels=range(score.shape[1])), device=x.device), lambda x: f'{x:.4f}') 
+            ('top5_acc', torch.tensor(top_k_accuracy_score(gold, score, k = 5, labels=range(score.shape[1])), device=x.device), lambda x: f'{x:.4f}'),
+            ('valid_nodes_ratio', torch.tensor(valid_nodes_ratio, device=x.device), lambda x: f'{x:.4f}'),
+            ('failed2check_valid_nodes_ratio', torch.tensor(failed2check_valid_nodes_ratio, device=x.device), lambda x: f'{x:.4f}'),
         ]
         return metrics
 
