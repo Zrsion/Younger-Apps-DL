@@ -294,7 +294,6 @@ class NodePrediction(BaseTask[BasicNodePredictionOptions]):
         valid_node_count = 0
         cannot_valid_node_count = 0
         for node_uuid, in_degree, out_degree in zip(node_uuids, in_degrees, out_degrees):
-            check_flag = False
             try:
                 op_type = ast.literal_eval(uuid2tuid[node_uuid][len('operator-'):])[0]
                 domain = ast.literal_eval(uuid2tuid[node_uuid][len('operator-'):])[1]
@@ -302,29 +301,36 @@ class NodePrediction(BaseTask[BasicNodePredictionOptions]):
             except Exception as e:
                 cannot_valid_node_count += 1
                 continue
+            input_check_flag = False
+            output_check_flag = False
             if len(schema.inputs) > 0:
                 last_input = schema.inputs[-1]
                 if last_input.option.value == last_input.option.Optional.value:
                     if in_degree <= len(schema.inputs):
-                        check_flag = True
+                        input_check_flag = True
                 elif last_input.option.value == last_input.option.Variadic.value:
                     if in_degree >= len(schema.inputs) - 1:
-                        check_flag = True
+                        input_check_flag = True
                 else:
                     if in_degree == len(schema.inputs):
-                        check_flag = True
+                        input_check_flag = True
+            else:
+                input_check_flag = in_degree == 0
+
             if len(schema.outputs) > 0:
                 last_output = schema.outputs[-1]
                 if last_output.option.value == last_output.option.Optional.value:
                     if out_degree <= len(schema.outputs):
-                        check_flag = True
+                        output_check_flag = True
                 elif last_output.option.value == last_output.option.Variadic.value:
                     if out_degree >= len(schema.outputs) - 1:
-                        check_flag = True
+                        output_check_flag = True
                 else:
                     if out_degree == len(schema.outputs):
-                        check_flag = True
-            if check_flag:
+                        output_check_flag = True
+            else:
+                output_check_flag = out_degree == 0
+            if input_check_flag and output_check_flag:
                 valid_node_count += 1
         valid_nodes_ratio = valid_node_count / total_nodes
         failed2check_valid_nodes_ratio = cannot_valid_node_count / total_nodes
