@@ -170,7 +170,7 @@ class NodeDataset(Dataset):
     
 
     @classmethod
-    def process_graph_x(cls, logicx: LogicX, dicts: dict[Literal['i2t', 't2i'], dict[int, str] | dict[str, int]], nxid2pgid: dict[str, int]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def process_graph_x(cls, logicx: LogicX, dicts: dict[Literal['i2t', 't2i'], dict[int, str] | dict[str, int]], nxid2pgid: dict[str, int]) -> torch.Tensor:
         # Shape: [#Node, 1]
 
         # ID in DAG
@@ -178,25 +178,16 @@ class NodeDataset(Dataset):
 
         # ID in Dict
         node_indices_in_dict = list()
-        indegrees = list()
-        outdegrees = list()
         for node_index_in_dag in node_indices_in_dag:
             node_uuid = logicx.dag.nodes[node_index_in_dag]['node_uuid']
-            indegrees.append(logicx.dag.nodes[node_index_in_dag]['node_indegree'])
-            outdegrees.append(logicx.dag.nodes[node_index_in_dag]['node_outdegree'])
             if node_uuid in dicts['t2i']:
                 node_index_in_dict = [dicts['t2i'][node_uuid]]
             else:
                 node_index_in_dict = [dicts['t2i']['__UNK__']]
             node_indices_in_dict.append(node_index_in_dict)
         x = torch.tensor(node_indices_in_dict, dtype=torch.long)
-        in_degree = torch.tensor(indegrees, dtype=torch.long)
-        out_degree = torch.tensor(outdegrees, dtype=torch.long)
-        assert x.shape[0] == len(node_indices_in_dag)
-        assert x.shape[0] == len(in_degree)
-        assert x.shape[0] == len(out_degree)
-        
-        return x, in_degree, out_degree
+
+        return x
 
     @classmethod
     def process_graph_edge_index(cls, logicx: LogicX, nxid2pgid: dict[str, int]) -> torch.Tensor:
@@ -221,7 +212,7 @@ class NodeDataset(Dataset):
         # >>> print(nxid2pgid)
         # {A: 0, B: 1, C: 2, D: 3}
 
-        x, in_degree, out_degree = cls.process_graph_x(logicx, dicts, nxid2pgid)
+        x = cls.process_graph_x(logicx, dicts, nxid2pgid)
         edge_index = cls.process_graph_edge_index(logicx, nxid2pgid)
-        node_data = NodeData(x=x, edge_index=edge_index, in_degree=in_degree, out_degree=out_degree)
+        node_data = NodeData(x=x, edge_index=edge_index)
         return node_data
