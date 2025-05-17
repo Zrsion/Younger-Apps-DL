@@ -307,7 +307,7 @@ class NodePrediction(BaseTask[BasicNodePredictionOptions]):
                 if last_input.option.value == last_input.option.Optional.value:
                     if in_degree <= len(schema.inputs):
                         check_flag = True
-                if last_input.option.value == last_input.option.Variadic.value:
+                elif last_input.option.value == last_input.option.Variadic.value:
                     if in_degree >= len(schema.inputs) - 1:
                         check_flag = True
                 else:
@@ -318,7 +318,7 @@ class NodePrediction(BaseTask[BasicNodePredictionOptions]):
                 if last_output.option.value == last_output.option.Optional.value:
                     if out_degree <= len(schema.outputs):
                         check_flag = True
-                if last_output.option.value == last_output.option.Variadic.value:
+                elif last_output.option.value == last_output.option.Variadic.value:
                     if out_degree >= len(schema.outputs) - 1:
                         check_flag = True
                 else:
